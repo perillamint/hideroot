@@ -1,5 +1,5 @@
 obj-m := hideroot.o
-#hideroot-objs += util.o
+hideroot-objs += util.o
 hideroot-objs += main.o
 
 KDIR = /home/maneulyori/Optimus_G_dev/garlickernel-lgog/
