@@ -136,15 +136,6 @@ asmlinkage long my_sys_access(const char __user *filename, int mode)
 			return ret;
 	}
 }
-/*
-asmlinkage long (*orig_do_execve) (const char __user *filenamei,
-                          const char __user *const __user *argv,
-                          const char __user *const __user *envp, struct pt_regs *regs);
-asmlinkage long (*orig_sys_execve) (const char __user *filenamei,
-                          const char __user *const __user *argv,
-                          const char __user *const __user *envp, struct pt_regs *regs);
-
-*/
 
 asmlinkage int my_do_execve(const char __user *filename,
 			  const char __user *const __user *argv,
@@ -159,56 +150,6 @@ asmlinkage int my_do_execve(const char __user *filename,
 	jprobe_return();
 	return 0;
 }
-
-/*{
-	int error;
-	char * filename;
-
-	filename = getname(filenamei);
-	error = PTR_ERR(filename);
-	if (IS_ERR(filename))
-		goto out;
-
-	printk("Running orig_do_execve... 0x%p\n", orig_do_execve);
-	error = orig_do_execve(filename, argv, envp, regs);
-	putname(filename);
-out:
-	return error;
-}*/
-/*
-{
-        int i, fake = 0;
-        long ret;
-
-	printk("filenamei = %p, argv = %p, envp = %p, orig_do_execve = %p\n", filenamei, argv, envp, orig_do_execve);
-
-	hijack_pause(orig_do_execve);
-        ret = orig_do_execve(filenamei, argv, envp);
-	hijack_resume(orig_do_execve);
-
-	printk("filenamei is %s\n", filenamei);
-
-	return ret;
-
-        for(i=0; i<hide_uid_count; i++)
-        {
-                printk("checking uid=%d\n", hide_uid[i]);
-                if(hide_uid[i] == current_uid())
-                        fake = 1;
-        }
-
-	if(fake == 0)
-		return ret;
-	else if(ret != -1)
-	{
-		if(strstr(filenamei, "bin/su"))
-			return -1;
-		else
-			return ret;
-	}
-
-	return ret;
-}*/
 
 static int init_hideroot(void)
 {
@@ -226,13 +167,7 @@ static int init_hideroot(void)
 	orig_sys_access = (void*) sys_call_table[__NR_access];
 	sys_call_table[__NR_access] = (unsigned long*) my_sys_access;
 
-	//Hook sys_execve - It does not work this way.
-	//orig_sys_execve = (void*) sys_call_table[__NR_execve];
-	//sys_call_table[__NR_execve] = (unsigned long*) my_sys_execve;
-	
-	//orig_do_execve = (void*)kallsyms_lookup_name("do_execve");
-	//hijack_start (orig_do_execve, &my_do_execve);
-	//
+	//Hook do_execve using jprobe
 	my_jprobe.kp.addr = 
                 (kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
         if (!my_jprobe.kp.addr) {
@@ -255,8 +190,6 @@ static void cleanup_hideroot(void)
 	printk("Quitting hider\n");
 	sys_call_table[__NR_getdents64] = (unsigned long*) orig_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long*) orig_sys_access;
-	//hijack_stop (orig_do_execve);
-	//sys_call_table[__NR_execve] = (unsigned long*) orig_sys_execve;
 	unregister_jprobe(&my_jprobe);
 }
 
