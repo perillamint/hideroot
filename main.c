@@ -8,6 +8,8 @@
 #include <linux/cred.h>
 #include <linux/dirent.h>
 #include <linux/syscalls.h>
+#include <linux/kprobes.h>
+#include <linux/kallsyms.h>
 #include <asm/unistd.h>
 #include <asm/uaccess.h>
 #include <asm/processor.h>
@@ -19,6 +21,14 @@ unsigned long **sys_call_table;
 int hide_uid[100]; 
 int hide_uid_count;
 module_param_array(hide_uid, int, &hide_uid_count, 0);
+
+asmlinkage int my_do_execve(const char __user *filename,
+			  const char __user *const __user *argv,
+			  const char __user *const __user *envp, struct pt_regs *regs);
+
+static struct jprobe my_jprobe = {
+        .entry = (kprobe_opcode_t *) my_do_execve
+};
 
 static unsigned long **find_sys_call_table(void)
 {
@@ -126,17 +136,55 @@ asmlinkage long my_sys_access(const char __user *filename, int mode)
 			return ret;
 	}
 }
+/*
+asmlinkage long (*orig_do_execve) (const char __user *filenamei,
+                          const char __user *const __user *argv,
+                          const char __user *const __user *envp, struct pt_regs *regs);
+asmlinkage long (*orig_sys_execve) (const char __user *filenamei,
+                          const char __user *const __user *argv,
+                          const char __user *const __user *envp, struct pt_regs *regs);
 
-asmlinkage long (*orig_sys_execve) (const char* filename, char *const argv[], char *const envp[]);
+*/
 
-asmlinkage long my_sys_execve (const char* filenamei, char *const argv[], char *const envp[])
+asmlinkage int my_do_execve(const char __user *filename,
+			  const char __user *const __user *argv,
+			  const char __user *const __user *envp, struct pt_regs *regs)
+{
+	char meaningless[] = "/system/thisfilecannotexist";
+
+	printk("do_execve for %s from %s\n", filename, current->comm);
+	if(strstr(filename, "bin/su"))
+		filename = meaningless;
+
+	jprobe_return();
+	return 0;
+}
+
+/*{
+	int error;
+	char * filename;
+
+	filename = getname(filenamei);
+	error = PTR_ERR(filename);
+	if (IS_ERR(filename))
+		goto out;
+
+	printk("Running orig_do_execve... 0x%p\n", orig_do_execve);
+	error = orig_do_execve(filename, argv, envp, regs);
+	putname(filename);
+out:
+	return error;
+}*/
+/*
 {
         int i, fake = 0;
         long ret;
 
-	printk("filenamei = %p, argv = %p, envp = %p, orig_sys_execve = %p\n", filenamei, argv, envp, orig_sys_execve);
+	printk("filenamei = %p, argv = %p, envp = %p, orig_do_execve = %p\n", filenamei, argv, envp, orig_do_execve);
 
-        ret = orig_sys_execve(filenamei, argv, envp);
+	hijack_pause(orig_do_execve);
+        ret = orig_do_execve(filenamei, argv, envp);
+	hijack_resume(orig_do_execve);
 
 	printk("filenamei is %s\n", filenamei);
 
@@ -160,10 +208,12 @@ asmlinkage long my_sys_execve (const char* filenamei, char *const argv[], char *
 	}
 
 	return ret;
-}
+}*/
 
 static int init_hideroot(void)
 {
+	int ret;
+
 	printk("Hooking...\n");
 	sys_call_table = find_sys_call_table();
 	printk("%p\n", sys_call_table);
@@ -179,6 +229,23 @@ static int init_hideroot(void)
 	//Hook sys_execve - It does not work this way.
 	//orig_sys_execve = (void*) sys_call_table[__NR_execve];
 	//sys_call_table[__NR_execve] = (unsigned long*) my_sys_execve;
+	
+	//orig_do_execve = (void*)kallsyms_lookup_name("do_execve");
+	//hijack_start (orig_do_execve, &my_do_execve);
+	//
+	my_jprobe.kp.addr = 
+                (kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
+        if (!my_jprobe.kp.addr) {
+                printk("Couldn't find %s to plant jprobe\n", "do_execve");
+                return -1;
+        }
+
+	if ((ret = register_jprobe(&my_jprobe)) <0) {
+                printk("register_jprobe failed, returned %d\n", ret);
+                return -1;
+        }
+        printk("Planted jprobe at %p, handler addr %p\n",
+               my_jprobe.kp.addr, my_jprobe.entry);
 
 	return 0;
 }
@@ -188,7 +255,9 @@ static void cleanup_hideroot(void)
 	printk("Quitting hider\n");
 	sys_call_table[__NR_getdents64] = (unsigned long*) orig_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long*) orig_sys_access;
+	//hijack_stop (orig_do_execve);
 	//sys_call_table[__NR_execve] = (unsigned long*) orig_sys_execve;
+	unregister_jprobe(&my_jprobe);
 }
 
 module_init(init_hideroot);
