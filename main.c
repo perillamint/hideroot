@@ -22,7 +22,18 @@ int hide_uid[100];
 int hide_uid_count;
 module_param_array(hide_uid, int, &hide_uid_count, 0);
 
-asmlinkage int my_do_execve(const char __user *filename,
+int check_hide_uid(void)
+{
+	int i;
+        for(i=0; i<hide_uid_count; i++)
+        {
+                if(hide_uid[i] == current_uid())
+                        return 1;
+        }
+	return 0;
+}
+
+asmlinkage int my_do_execve(char __user *filename,
 			  const char __user *const __user *argv,
 			  const char __user *const __user *envp, struct pt_regs *regs);
 
@@ -55,7 +66,6 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
                                 struct linux_dirent64 __user *dirent,
                                 unsigned int count)
 {
-	int i;
 	int fake = 0;
 	int offset, copyret;
 	struct linux_dirent64 *td1, *td2, *cur, *prev;
@@ -64,11 +74,7 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 	
 	ret = orig_sys_getdents64(fd, dirent, count);
 
-	for(i=0; i<hide_uid_count; i++)
-	{
-		if(hide_uid[i] == current_uid())
-			fake = 1;
-	}
+	fake = check_hide_uid();
 
 	if(fake == 0)
 		return ret;
@@ -115,16 +121,12 @@ out:
 long (*orig_sys_access) (const char __user *filename, int mode);
 asmlinkage long my_sys_access(const char __user *filename, int mode)
 {
-	int i, fake = 0;
+	int fake = 0;
 	long ret;
 
 	ret = orig_sys_access(filename, mode);
 
-        for(i=0; i<hide_uid_count; i++)
-        {
-                if(hide_uid[i] == current_uid())
-                        fake = 1;
-        }
+	fake = check_hide_uid();
 
 	if(fake == 0)
 		return ret;
@@ -137,15 +139,20 @@ asmlinkage long my_sys_access(const char __user *filename, int mode)
 	}
 }
 
-asmlinkage int my_do_execve(const char __user *filename,
+asmlinkage int my_do_execve(char __user *filename,
 			  const char __user *const __user *argv,
 			  const char __user *const __user *envp, struct pt_regs *regs)
 {
-	char meaningless[] = "/system/thisfilecannotexist";
+	int fake;
+
+	fake = check_hide_uid();
+	
+	if(fake == 0)
+		jprobe_return();
 
 	printk("do_execve for %s from %s\n", filename, current->comm);
 	if(strstr(filename, "bin/su"))
-		filename = meaningless;
+		filename[0] = 0;
 
 	jprobe_return();
 	return 0;
