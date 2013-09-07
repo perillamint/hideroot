@@ -35,7 +35,8 @@ int check_hide_uid(void)
 
 asmlinkage int my_do_execve(char __user * filename,
 			    const char __user * const __user * argv,
-			    const char __user * const __user * envp, struct pt_regs *regs);
+			    const char __user * const __user * envp,
+			    struct pt_regs *regs);
 
 static struct jprobe my_jprobe = {
 	.entry = (kprobe_opcode_t *) my_do_execve
@@ -60,10 +61,12 @@ static unsigned long **find_sys_call_table(void)
 }
 
 long (*orig_sys_getdents64) (unsigned int fd,
-			     struct linux_dirent64 __user * dirent, unsigned int count);
+			     struct linux_dirent64 __user * dirent,
+			     unsigned int count);
 
 asmlinkage long my_sys_getdents64(unsigned int fd,
-				  struct linux_dirent64 __user * dirent, unsigned int count)
+				  struct linux_dirent64 __user * dirent,
+				  unsigned int count)
 {
 	int fake = 0;
 	int offset, copyret;
@@ -101,7 +104,8 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 			if (!prev)
 			{
 				ret -= offset;
-				td2 = (struct linux_dirent64 *)((char *)td1 + offset);
+				td2 = (struct linux_dirent64 *)((char *)td1 +
+								offset);
 			}
 			else
 			{
@@ -146,7 +150,8 @@ asmlinkage long my_sys_access(const char __user * filename, int mode)
 
 asmlinkage int my_do_execve(char __user * filename,
 			    const char __user * const __user * argv,
-			    const char __user * const __user * envp, struct pt_regs *regs)
+			    const char __user * const __user * envp,
+			    struct pt_regs *regs)
 {
 	int fake;
 
@@ -165,8 +170,10 @@ asmlinkage int my_do_execve(char __user * filename,
 	return 0;
 }
 
-long (*orig_sys_stat64) (const char __user * filename, struct stat64 __user * statbuf);
-asmlinkage long my_sys_stat64(const char __user * filename, struct stat64 __user * statbuf)
+long (*orig_sys_stat64) (const char __user * filename,
+			 struct stat64 __user * statbuf);
+asmlinkage long my_sys_stat64(const char __user * filename,
+			      struct stat64 __user * statbuf)
 {
 	int fake = check_hide_uid();
 
@@ -184,8 +191,10 @@ asmlinkage long my_sys_stat64(const char __user * filename, struct stat64 __user
 	return res;
 }
 
-asmlinkage long (*orig_sys_open) (const char __user * filename, int flags, umode_t mode);
-asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mode)
+asmlinkage long (*orig_sys_open) (const char __user * filename,
+				  int flags, umode_t mode);
+asmlinkage long my_sys_open(const char __user * filename,
+			    int flags, umode_t mode)
 {
 	int fake = check_hide_uid();
 	long res = orig_sys_open(filename, flags, mode);
@@ -193,7 +202,7 @@ asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mod
 	if (fake == 0)
 		return res;
 
-	if (strstr(filename, "bin/su"))
+	if (strstr(filename, "bin/su"));
 	{
 		printk("sys_open root detected: %s\n", filename);
 		sys_close(res);
@@ -220,7 +229,8 @@ static int init_hideroot(void)
 	sys_call_table[__NR_access] = (unsigned long *)my_sys_access;
 
 	// Hook do_execve using jprobe
-	my_jprobe.kp.addr = (kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
+	my_jprobe.kp.addr =
+		(kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
 	if (!my_jprobe.kp.addr)
 	{
 		printk("Couldn't find %s to plant jprobe\n", "do_execve");
@@ -232,7 +242,8 @@ static int init_hideroot(void)
 		printk("register_jprobe failed, returned %d\n", ret);
 		return -1;
 	}
-	printk("Planted jprobe at %p, handler addr %p\n", my_jprobe.kp.addr, my_jprobe.entry);
+	printk("Planted jprobe at %p, handler addr %p\n",
+	       my_jprobe.kp.addr, my_jprobe.entry);
 
 	orig_sys_stat64 = (void *)sys_call_table[__NR_stat64];
 	sys_call_table[__NR_stat64] = (unsigned long *)my_sys_stat64;
