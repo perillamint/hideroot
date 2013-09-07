@@ -145,17 +145,37 @@ asmlinkage int my_do_execve(char __user *filename,
 {
 	int fake;
 
+	printk("do_execve for %s from %s\n", filename, current->comm);
+
 	fake = check_hide_uid();
 	
 	if(fake == 0)
 		jprobe_return();
 
-	printk("do_execve for %s from %s\n", filename, current->comm);
+//	printk("do_execve for %s from %s\n", filename, current->comm);
 	if(strstr(filename, "bin/su"))
 		filename[0] = 0;
 
 	jprobe_return();
 	return 0;
+}
+
+long (*orig_sys_stat64) (const char __user *filename,
+                                 struct stat64 __user *statbuf);
+asmlinkage long my_sys_stat64(const char __user *filename,
+                                 struct stat64 __user *statbuf)
+{
+	int fake = check_hide_uid();
+
+	long res = orig_sys_stat64(filename, statbuf);
+
+	if(fake == 0)
+		return res;
+
+	if(strstr(filename, "bin/su"))
+		return -1;
+
+	return res;
 }
 
 static int init_hideroot(void)
@@ -189,6 +209,9 @@ static int init_hideroot(void)
         printk("Planted jprobe at %p, handler addr %p\n",
                my_jprobe.kp.addr, my_jprobe.entry);
 
+	orig_sys_stat64 = (void*) sys_call_table[__NR_stat64];
+	sys_call_table[__NR_stat64] = (unsigned long*) my_sys_stat64;
+
 	return 0;
 }
 
@@ -198,6 +221,7 @@ static void cleanup_hideroot(void)
 	sys_call_table[__NR_getdents64] = (unsigned long*) orig_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long*) orig_sys_access;
 	unregister_jprobe(&my_jprobe);
+	sys_call_table[__NR_stat64] = (unsigned long*) orig_sys_stat64;
 }
 
 module_init(init_hideroot);
