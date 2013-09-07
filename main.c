@@ -21,6 +21,10 @@ int hide_uid[100];
 int hide_uid_count;
 module_param_array(hide_uid, int, &hide_uid_count, 0);
 
+char *hide_file[100] = {"bin/su", };
+int hide_file_cnt;
+module_param_array(hide_file, charp, &hide_file_cnt, 0);
+
 int check_hide_uid(void)
 {
 	int i;
@@ -29,6 +33,20 @@ int check_hide_uid(void)
 		if (hide_uid[i] == current_uid())
 			return 1;
 	}
+	return 0;
+}
+
+int check_hide_file(char *filename)
+{
+	int i;
+	for (i=0; i < hide_file_cnt; i++)
+	{
+		if (strstr(filename, hide_file[i]))
+		{
+			return 1;
+		}
+	}
+
 	return 0;
 }
 
@@ -95,7 +113,7 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 		cur = (struct linux_dirent64 *)ptr;
 		offset = cur->d_reclen;
 
-		if (strstr(cur->d_name, "su") != NULL)
+		if (check_hide_file(cur->d_name))
 		{
 			if (!prev)
 			{
@@ -136,7 +154,7 @@ asmlinkage long my_sys_access(const char __user * filename, int mode)
 		return ret;
 	else
 	{
-		if (strstr(filename, "su"))
+		if (check_hide_file(filename))
 			return -1;
 		else
 			return ret;
@@ -147,17 +165,12 @@ asmlinkage int my_do_execve(char __user * filename,
 			    const char __user * const __user * argv,
 			    const char __user * const __user * envp, struct pt_regs *regs)
 {
-	int fake;
-
-	printk("do_execve for %s from %s\n", filename, current->comm);
-
-	fake = check_hide_uid();
+	int fake = check_hide_uid();
 
 	if (fake == 0)
 		jprobe_return();
 
-	// printk("do_execve for %s from %s\n", filename, current->comm);
-	if (strstr(filename, "bin/su"))
+	if (check_hide_file(filename))
 		filename[0] = 0;
 
 	jprobe_return();
@@ -174,11 +187,8 @@ asmlinkage long my_sys_stat64(const char __user * filename, struct stat64 __user
 	if (fake == 0)
 		return res;
 
-	if (strstr(filename, "bin/su"))
-	{
-		printk("sys_stat64 root detected: %s\n", filename);
+	if (check_hide_file(filename))
 		return -1;
-	}
 
 	return res;
 }
@@ -192,7 +202,7 @@ asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mod
 	if (fake == 0)
 		return res;
 
-	if (strstr(filename, "bin/su"))
+	if (check_hide_file(filename))
 	{
 		printk("sys_open root detected: %s\n", filename);
 		sys_close(res);
@@ -247,9 +257,9 @@ static void cleanup_hideroot(void)
 	printk("Quitting hider\n");
 	sys_call_table[__NR_getdents64] = (unsigned long *)orig_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long *)orig_sys_access;
-	unregister_jprobe(&my_jprobe);
 	sys_call_table[__NR_stat64] = (unsigned long *)orig_sys_stat64;
 	sys_call_table[__NR_open] = (unsigned long *)orig_sys_open;
+	unregister_jprobe(&my_jprobe);
 }
 
 module_init(init_hideroot);
