@@ -14,7 +14,6 @@
 #include <asm/uaccess.h>
 #include <asm/processor.h>
 #include "dumpcode.h"
-#include "util.h"
 
 unsigned long **sys_call_table;
 
