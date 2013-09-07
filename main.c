@@ -36,7 +36,7 @@ int check_hide_uid(void)
 	return 0;
 }
 
-int check_hide_file(char *filename)
+int check_hide_file(const char *filename)
 {
 	int i;
 	for (i=0; i < hide_file_cnt; i++)
