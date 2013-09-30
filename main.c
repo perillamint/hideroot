@@ -15,7 +15,12 @@
 #include <asm/processor.h>
 #include "dumpcode.h"
 
+#ifdef CONFIG_ARCH_MSM
+#include <asm/mmu_writeable.h> //Qualcomm specific code.
+#endif
+
 unsigned long **sys_call_table;
+unsigned long flags;
 
 int hide_uid[100];
 int hide_uid_count=0;
@@ -217,13 +222,24 @@ static int init_hideroot(void)
 	sys_call_table = find_sys_call_table();
 	printk("%p\n", sys_call_table);
 
-	// Hook sys_getdents64
+	printk("Backing up original address...\n");
 	orig_sys_getdents64 = (void *)sys_call_table[__NR_getdents64];
-	sys_call_table[__NR_getdents64] = (unsigned long *)my_sys_getdents64;
-
-	// Hook sys_access
 	orig_sys_access = (void *)sys_call_table[__NR_access];
+	orig_sys_stat64 = (void *)sys_call_table[__NR_stat64];
+	orig_sys_open = (void *)sys_call_table[__NR_open];
+
+#ifdef CONFIG_ARCH_MSM
+	printk("Qualcomm detected. using mem_text_write_kernel_world to modify sys_call_table.\n");
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_getdents64], (unsigned long)my_sys_getdents64);
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_access], (unsigned long)my_sys_access);
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_stat64], (unsigned long)my_sys_stat64);
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_open], (unsigned long)my_sys_open);
+#else
+	sys_call_table[__NR_getdents64] = (unsigned long *)my_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long *)my_sys_access;
+	sys_call_table[__NR_stat64] = (unsigned long *)my_sys_stat64;
+	sys_call_table[__NR_open] = (unsigned long *)my_sys_open;
+#endif
 
 	// Hook do_execve using jprobe
 	my_jprobe.kp.addr = (kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
@@ -239,23 +255,25 @@ static int init_hideroot(void)
 		return -1;
 	}
 	printk("Planted jprobe at %p, handler addr %p\n", my_jprobe.kp.addr, my_jprobe.entry);
-
-	orig_sys_stat64 = (void *)sys_call_table[__NR_stat64];
-	sys_call_table[__NR_stat64] = (unsigned long *)my_sys_stat64;
-
-	orig_sys_open = (void *)sys_call_table[__NR_open];
-	sys_call_table[__NR_open] = (unsigned long *)my_sys_open;
-
 	return 0;
 }
 
 static void cleanup_hideroot(void)
 {
-	printk("Quitting hider\n");
+	printk("Unhooking...\n");
+
+#ifdef CONFIG_ARCH_MSM
+	printk("Qualcomm detected. using mem_text_write_kernel_world to modify sys_call_table.\n");
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_getdents64], (unsigned long)orig_sys_getdents64);
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_access], (unsigned long)orig_sys_access);
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_stat64], (unsigned long)orig_sys_stat64);
+	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_open], (unsigned long)orig_sys_open);
+#else
 	sys_call_table[__NR_getdents64] = (unsigned long *)orig_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long *)orig_sys_access;
 	sys_call_table[__NR_stat64] = (unsigned long *)orig_sys_stat64;
 	sys_call_table[__NR_open] = (unsigned long *)orig_sys_open;
+#endif
 	unregister_jprobe(&my_jprobe);
 }
 
