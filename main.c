@@ -19,6 +19,32 @@
 #include <asm/mmu_writeable.h> //Qualcomm specific code.
 #endif
 
+#if defined(_CONFIG_X86_) || defined(_CONFIG_X86_64_)
+// Thanks Dan
+inline unsigned long disable_wp ( void )
+{
+    unsigned long cr0;
+
+    preempt_disable();
+    barrier();
+
+    cr0 = read_cr0();
+    write_cr0(cr0 & ~X86_CR0_WP);
+    return cr0;
+}
+
+inline void restore_wp ( unsigned long cr0 )
+{
+    write_cr0(cr0);
+
+    barrier();
+    preempt_enable_no_resched();
+}
+#else
+inline unsigned long disable_wp(void) { return read_cr0(); };
+inline unsigned long restore_wp(unsigned long cr0) {}
+#endif
+
 unsigned long **sys_call_table;
 unsigned long flags;
 
@@ -217,6 +243,7 @@ asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mod
 static int init_hideroot(void)
 {
 	int ret;
+	unsigned long cr0 = 0;
 
 	printk("Hooking...\n");
 	sys_call_table = find_sys_call_table();
@@ -228,6 +255,7 @@ static int init_hideroot(void)
 	orig_sys_stat64 = (void *)sys_call_table[__NR_stat64];
 	orig_sys_open = (void *)sys_call_table[__NR_open];
 
+	cr0 = disable_wp();
 #ifdef CONFIG_ARCH_MSM
 	printk("Qualcomm detected. using mem_text_write_kernel_world to modify sys_call_table.\n");
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_getdents64], (unsigned long)my_sys_getdents64);
@@ -240,6 +268,7 @@ static int init_hideroot(void)
 	sys_call_table[__NR_stat64] = (unsigned long *)my_sys_stat64;
 	sys_call_table[__NR_open] = (unsigned long *)my_sys_open;
 #endif
+	restore_wp(cr0);
 
 	// Hook do_execve using jprobe
 	my_jprobe.kp.addr = (kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
@@ -260,20 +289,23 @@ static int init_hideroot(void)
 
 static void cleanup_hideroot(void)
 {
+	unsigned long cr0 = 0;
 	printk("Unhooking...\n");
 
+	cr0 = disable_wp();
 #ifdef CONFIG_ARCH_MSM
 	printk("Qualcomm detected. using mem_text_write_kernel_world to modify sys_call_table.\n");
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_getdents64], (unsigned long)orig_sys_getdents64);
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_access], (unsigned long)orig_sys_access);
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_stat64], (unsigned long)orig_sys_stat64);
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_open], (unsigned long)orig_sys_open);
-#else
+#else	
 	sys_call_table[__NR_getdents64] = (unsigned long *)orig_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long *)orig_sys_access;
 	sys_call_table[__NR_stat64] = (unsigned long *)orig_sys_stat64;
 	sys_call_table[__NR_open] = (unsigned long *)orig_sys_open;
 #endif
+	restore_wp(cr0);
 	unregister_jprobe(&my_jprobe);
 }
 
