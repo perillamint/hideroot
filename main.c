@@ -41,7 +41,7 @@ inline void restore_wp ( unsigned long cr0 )
     preempt_enable_no_resched();
 }
 #else
-inline unsigned long disable_wp(void) { return read_cr0(); };
+inline unsigned long disable_wp(void) { return 0; };
 inline unsigned long restore_wp(unsigned long cr0) {}
 #endif
 
