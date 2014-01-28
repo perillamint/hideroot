@@ -42,7 +42,7 @@ inline void restore_wp ( unsigned long cr0 )
 }
 #else
 inline unsigned long disable_wp(void) { return 0; };
-inline unsigned long restore_wp(unsigned long cr0) {}
+inline void restore_wp(unsigned long cr0) {}
 #endif
 
 unsigned long **sys_call_table;
