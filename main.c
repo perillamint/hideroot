@@ -5,6 +5,7 @@
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/fs.h>
+#include <linux/fdtable.h>
 #include <linux/cred.h>
 #include <linux/dirent.h>
 #include <linux/syscalls.h>
@@ -52,7 +53,7 @@ int hide_uid[100];
 unsigned int hide_uid_count=0;
 module_param_array(hide_uid, int, &hide_uid_count, 0644);
 
-char *hide_file[100] = {"bin/su", };
+char *hide_file[100] = {"bin/su", "bin/busybox", "app/Superuser.apk", "bin/proc", "bin/librank", };
 unsigned int hide_file_cnt=1;
 module_param_array(hide_file, charp, &hide_file_cnt, 0644);
 
@@ -118,6 +119,11 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 	struct linux_dirent64 *td1, *td2, *cur, *prev;
 	unsigned long ret, tmp;
 	char *ptr;
+	char *tmp_path;
+	char *pathname;
+	struct file *file;
+	struct path path;
+	char fullpath[512] = {0, };
 
 	ret = orig_sys_getdents64(fd, dirent, count);
 
@@ -129,8 +135,40 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 	if (ret <= 0)
 		return ret;
 
-	if ((td2 = kmalloc(ret, GFP_KERNEL)) == NULL)
-		goto out;
+	if ((td2 = kmalloc(ret + 1, GFP_KERNEL)) == NULL)
+	{
+		printk("KMALLOC FAILED!");
+		return ret;
+	}
+
+	spin_lock(&current->files->file_lock);
+	file = fcheck(fd);
+
+	if (!file) {
+		printk("It is weird... How can you reach here?\n");
+		spin_unlock(&current->files->file_lock);
+		return ret;
+	}
+
+	path = file->f_path;
+	path_get(&file->f_path);
+	spin_unlock(&current->files->file_lock);
+
+	tmp_path = (char *)__get_free_page(GFP_TEMPORARY);
+
+	if (!tmp_path) {
+		path_put(&path);
+		return -ENOMEM;
+	}
+
+	pathname = d_path(&path, tmp_path, PAGE_SIZE);
+	path_put(&path);
+
+	if (IS_ERR(pathname)) {
+		free_page((unsigned long)tmp_path);
+		printk("Errnous path. \n");
+		return ret;
+	}
 
 	copyret = copy_from_user(td2, dirent, ret);
 
@@ -144,7 +182,13 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 		cur = (struct linux_dirent64 *)ptr;
 		offset = cur->d_reclen;
 
-		if (check_hide_file(cur->d_name))
+		fullpath[0] = 0;
+
+		strcat(fullpath, pathname);
+		strcat(fullpath, "/");
+		strcat(fullpath, cur->d_name);
+
+		if (check_hide_file(fullpath))
 		{
 			if (!prev)
 			{
@@ -167,8 +211,8 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 
 	copyret = copyret;
 	kfree(td1);
+	free_page((unsigned long)tmp_path);
 
-      out:
 	return ret;
 }
 
@@ -239,6 +283,7 @@ static int init_hideroot(void)
 	cr0 = disable_wp();
 #ifdef CONFIG_ARCH_MSM
 	printk("Qualcomm detected. using mem_text_write_kernel_world to modify sys_call_table.\n");
+	printk("%p\n", &sys_call_table[__NR_getdents64]);
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_getdents64], (unsigned long)my_sys_getdents64);
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_access], (unsigned long)my_sys_access);
 	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_stat64], (unsigned long)my_sys_stat64);
