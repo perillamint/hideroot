@@ -11,11 +11,19 @@
 #include <linux/syscalls.h>
 #include <linux/kprobes.h>
 #include <linux/kallsyms.h>
-#include <asm/unistd.h>
 #include <asm/uaccess.h>
 #include <asm/processor.h>
 #include <asm/tlbflush.h>
 #include "dumpcode.h"
+
+#ifndef __NR_syscalls
+//TODO: find way to get rid of this.
+#define __NR_syscalls 500
+#endif
+
+#ifndef NR_syscalls
+#define NR_syscalls __NR_syscalls
+#endif
 
 #ifdef CONFIG_ARCH_MSM
 #include <asm/mmu_writeable.h> //Qualcomm specific code.
@@ -52,7 +60,7 @@ pmd_t *get_pmd_addr(unsigned long addr)
 	return pmd;
 }
 
-void unlock_page(unsigned long addr)
+pmd_t unlock_page(unsigned long addr)
 {
 	void (*my_flush_tlb_kernel_page)(unsigned long) = get_flush_tlb_kernel_page();
 	pmd_t *pmd = get_pmd_addr(addr);
@@ -66,7 +74,7 @@ void unlock_page(unsigned long addr)
 	saved_pmd = *pmd;
 
 	if ((saved_pmd & PMD_TYPE_MASK) != PMD_TYPE_SECT)
-		return;
+		return saved_pmd;
 
 	if (*pmd & PMD_SECT_APX)
 	{
@@ -75,33 +83,33 @@ void unlock_page(unsigned long addr)
 	else
 	{
 		printk("Uh... I think this page (0x%lx - 0x%lx) is already unlocked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK));
-		return;
+		return saved_pmd;
 	}
 
 	flush_pmd_entry(pmd_to_flush);
 	my_flush_tlb_kernel_page(addr & PAGE_MASK);
 
 	printk("Page 0x%lx - 0x%lx unlocked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
+	return saved_pmd;
 }
 
-void lock_page(unsigned long addr)
+void restore_pmd(unsigned long addr, pmd_t pmd_to_restore)
 {
 	void (*my_flush_tlb_kernel_page)(unsigned long) = get_flush_tlb_kernel_page();
 	pmd_t *pmd = get_pmd_addr(addr);
-	if (*pmd & PMD_SECT_APX)
-	{
-		printk("Uh... I think this page (0x%lx - 0x%lx) is already locked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK));
-		return;
+
+	if (addr & SECTION_SIZE) {
+		pmd++;
 	}
-	else
-	{
-		*pmd |= PMD_SECT_APX;
-	}
+
+	printk("Restoring PMD 0x%lx to 0x%lx\n", (unsigned long) pmd_to_restore, addr);
+
+	*pmd = pmd_to_restore;
 
 	flush_pmd_entry(pmd);
 	my_flush_tlb_kernel_page(addr & PAGE_MASK);
 
-	printk("Page 0x%lx - 0x%lx locked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
+	printk("Page 0x%lx - 0x%lx restored.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
 }
 
 int check_hide_uid(void)
@@ -315,6 +323,9 @@ asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mod
 static int init_hideroot(void)
 {
 	int ret;
+	unsigned long int i;
+	pmd_t pmd_backup[100] = {0, };
+	unsigned long int pmd_cnt;
 
 	printk("Hooking...\n");
 	sys_call_table = find_sys_call_table();
@@ -327,12 +338,16 @@ static int init_hideroot(void)
 	orig_sys_open = (void *)sys_call_table[__NR_open];
 
 	printk("Unlocking...\n");
-	unlock_page((unsigned long) sys_call_table);
-	unlock_page((unsigned long) &sys_call_table[__NR_stat64]);
-	unlock_page((unsigned long) &sys_call_table[__NR_access]);
-	unlock_page((unsigned long) &sys_call_table[__NR_getdents64]);
-	unlock_page((unsigned long) &sys_call_table[__NR_open]);
-	unlock_page((unsigned long) &sys_call_table[__NR_execve]);
+
+	pmd_cnt = (unsigned long)((&sys_call_table[NR_syscalls] - sys_call_table) / (~PAGE_MASK) + 1);
+
+	printk("Number of pages needed to unlocked: %ld\n", pmd_cnt);
+
+	for (i = 0; i <= pmd_cnt; i++)
+	{
+		pmd_backup[i] = unlock_page((unsigned long) sys_call_table + (~PAGE_MASK) * i);
+	}
+
 	printk("OK. pages unlocked. Starting hook\n");
 	sys_call_table[__NR_getdents64] = (unsigned long *)my_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long *)my_sys_access;
@@ -356,19 +371,31 @@ static int init_hideroot(void)
 	}
 	printk("Planted jprobe at %p, handler addr %p\n", my_jprobe.kp.addr, my_jprobe.entry);
 	
+	printk("OK. now restoring PMDs.\n");	
+	for (i = 0; i <= pmd_cnt; i++)
+	{
+		restore_pmd((unsigned long) sys_call_table + (~PAGE_MASK) * i, pmd_backup[i]);
+	}
+
+	printk("Okay. Enjoy it!\n");
+	
 	return 0;
 }
 
 static void cleanup_hideroot(void)
 {
+	unsigned long int i;
+	pmd_t pmd_backup[100] = {0, };
+	unsigned long int pmd_cnt;
+
 	printk("Unlocking...\n");
 
-	unlock_page((unsigned long) &sys_call_table[__NR_stat64]);
-	unlock_page((unsigned long) &sys_call_table[__NR_access]);
-	unlock_page((unsigned long) &sys_call_table[__NR_getdents64]);
-	unlock_page((unsigned long) &sys_call_table[__NR_open]);
-	unlock_page((unsigned long) &sys_call_table[__NR_execve]);
-	unlock_page((unsigned long) &sys_call_table[__NR_execve] + PAGE_SIZE);
+	pmd_cnt = (unsigned long)((&sys_call_table[NR_syscalls] - sys_call_table) / (~PAGE_MASK) + 1);
+
+	for (i = 0; i <= pmd_cnt; i++)
+	{
+		pmd_backup[i] = unlock_page((unsigned long) sys_call_table + (~PAGE_MASK) * i);
+	}
 
 	printk("OK. Pages unlocked. now restoring..\n");
 	sys_call_table[__NR_getdents64] = (unsigned long *)orig_sys_getdents64;
@@ -376,12 +403,15 @@ static void cleanup_hideroot(void)
 	sys_call_table[__NR_stat64] = (unsigned long *)orig_sys_stat64;
 	sys_call_table[__NR_open] = (unsigned long *)orig_sys_open;
 
-	unlock_page(kallsyms_lookup_name("do_execve"));
-
 	printk("Unregistering jprobe\n");
 	unregister_jprobe(&my_jprobe);
 
-	//lock_page((unsigned long) sys_call_table);
+	printk("OK. now restoring PMDs.\n");	
+	for (i = 0; i <= pmd_cnt; i++)
+	{
+		restore_pmd((unsigned long) sys_call_table + (~PAGE_MASK) * i, pmd_backup[i]);
+	}
+	printk("Okay. bye.\n");
 }
 
 module_init(init_hideroot);
