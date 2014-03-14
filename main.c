@@ -14,36 +14,11 @@
 #include <asm/unistd.h>
 #include <asm/uaccess.h>
 #include <asm/processor.h>
+#include <asm/tlbflush.h>
 #include "dumpcode.h"
 
 #ifdef CONFIG_ARCH_MSM
 #include <asm/mmu_writeable.h> //Qualcomm specific code.
-#endif
-
-#if defined(_CONFIG_X86_) || defined(_CONFIG_X86_64_)
-// Thanks Dan
-inline unsigned long disable_wp ( void )
-{
-    unsigned long cr0;
-
-    preempt_disable();
-    barrier();
-
-    cr0 = read_cr0();
-    write_cr0(cr0 & ~X86_CR0_WP);
-    return cr0;
-}
-
-inline void restore_wp ( unsigned long cr0 )
-{
-    write_cr0(cr0);
-
-    barrier();
-    preempt_enable_no_resched();
-}
-#else
-inline unsigned long disable_wp(void) { return 0; };
-inline void restore_wp(unsigned long cr0) {}
 #endif
 
 unsigned long **sys_call_table;
@@ -56,6 +31,78 @@ module_param_array(hide_uid, int, &hide_uid_count, 0644);
 char *hide_file[100] = {"bin/su", "bin/busybox", "app/Superuser.apk", "bin/proc", "bin/librank", };
 unsigned int hide_file_cnt=1;
 module_param_array(hide_file, charp, &hide_file_cnt, 0644);
+
+void (*get_flush_tlb_kernel_page(void))(unsigned long)
+{
+	void (*func)(unsigned long) = (void*) kallsyms_lookup_name("flush_tlb_kernel_page");
+	printk("flush_tlb_kernel_page found at %p\n", func);
+	return func;
+}
+
+pmd_t *get_pmd_addr(unsigned long addr)
+{
+	struct task_struct *tsk = current;
+	struct mm_struct *mm = tsk->active_mm;
+	pgd_t *pgd = pgd_offset(mm, addr);
+	pud_t *pud = pud_offset(pgd, addr);
+	pmd_t *pmd = pmd_offset(pud, addr);
+
+	printk("Get PMD of 0x%lx: 0x%p\n", addr, pmd);
+	
+	return pmd;
+}
+
+void unlock_page(unsigned long addr)
+{
+	void (*my_flush_tlb_kernel_page)(unsigned long) = get_flush_tlb_kernel_page();
+	pmd_t *pmd = get_pmd_addr(addr);
+	pmd_t *pmd_to_flush = pmd;
+	pmd_t saved_pmd;
+
+	if (addr & SECTION_SIZE) {
+		pmd++;
+	}
+
+	saved_pmd = *pmd;
+
+	if ((saved_pmd & PMD_TYPE_MASK) != PMD_TYPE_SECT)
+		return;
+
+	if (*pmd & PMD_SECT_APX)
+	{
+		*pmd &= ~PMD_SECT_APX;
+	}
+	else
+	{
+		printk("Uh... I think this page (0x%lx - 0x%lx) is already unlocked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK));
+		return;
+	}
+
+	flush_pmd_entry(pmd_to_flush);
+	my_flush_tlb_kernel_page(addr & PAGE_MASK);
+
+	printk("Page 0x%lx - 0x%lx unlocked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
+}
+
+void lock_page(unsigned long addr)
+{
+	void (*my_flush_tlb_kernel_page)(unsigned long) = get_flush_tlb_kernel_page();
+	pmd_t *pmd = get_pmd_addr(addr);
+	if (*pmd & PMD_SECT_APX)
+	{
+		printk("Uh... I think this page (0x%lx - 0x%lx) is already locked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK));
+		return;
+	}
+	else
+	{
+		*pmd |= PMD_SECT_APX;
+	}
+
+	flush_pmd_entry(pmd);
+	my_flush_tlb_kernel_page(addr & PAGE_MASK);
+
+	printk("Page 0x%lx - 0x%lx locked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
+}
 
 int check_hide_uid(void)
 {
@@ -268,7 +315,6 @@ asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mod
 static int init_hideroot(void)
 {
 	int ret;
-	unsigned long cr0 = 0;
 
 	printk("Hooking...\n");
 	sys_call_table = find_sys_call_table();
@@ -280,21 +326,20 @@ static int init_hideroot(void)
 	orig_sys_stat64 = (void *)sys_call_table[__NR_stat64];
 	orig_sys_open = (void *)sys_call_table[__NR_open];
 
-	cr0 = disable_wp();
-#ifdef CONFIG_ARCH_MSM
-	printk("Qualcomm detected. using mem_text_write_kernel_world to modify sys_call_table.\n");
-	printk("%p\n", &sys_call_table[__NR_getdents64]);
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_getdents64], (unsigned long)my_sys_getdents64);
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_access], (unsigned long)my_sys_access);
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_stat64], (unsigned long)my_sys_stat64);
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_open], (unsigned long)my_sys_open);
-#else
+	printk("Unlocking...\n");
+	unlock_page((unsigned long) sys_call_table);
+	unlock_page((unsigned long) &sys_call_table[__NR_stat64]);
+	unlock_page((unsigned long) &sys_call_table[__NR_access]);
+	unlock_page((unsigned long) &sys_call_table[__NR_getdents64]);
+	unlock_page((unsigned long) &sys_call_table[__NR_open]);
+	unlock_page((unsigned long) &sys_call_table[__NR_execve]);
+	printk("OK. pages unlocked. Starting hook\n");
 	sys_call_table[__NR_getdents64] = (unsigned long *)my_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long *)my_sys_access;
 	sys_call_table[__NR_stat64] = (unsigned long *)my_sys_stat64;
 	sys_call_table[__NR_open] = (unsigned long *)my_sys_open;
-#endif
-	restore_wp(cr0);
+
+	unlock_page(kallsyms_lookup_name("do_execve"));
 
 	// Hook do_execve using jprobe
 	my_jprobe.kp.addr = (kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
@@ -310,29 +355,33 @@ static int init_hideroot(void)
 		return -1;
 	}
 	printk("Planted jprobe at %p, handler addr %p\n", my_jprobe.kp.addr, my_jprobe.entry);
+	
 	return 0;
 }
 
 static void cleanup_hideroot(void)
 {
-	unsigned long cr0 = 0;
-	printk("Unhooking...\n");
+	printk("Unlocking...\n");
 
-	cr0 = disable_wp();
-#ifdef CONFIG_ARCH_MSM
-	printk("Qualcomm detected. using mem_text_write_kernel_world to modify sys_call_table.\n");
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_getdents64], (unsigned long)orig_sys_getdents64);
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_access], (unsigned long)orig_sys_access);
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_stat64], (unsigned long)orig_sys_stat64);
-	mem_text_write_kernel_word((unsigned long *)&sys_call_table[__NR_open], (unsigned long)orig_sys_open);
-#else	
+	unlock_page((unsigned long) &sys_call_table[__NR_stat64]);
+	unlock_page((unsigned long) &sys_call_table[__NR_access]);
+	unlock_page((unsigned long) &sys_call_table[__NR_getdents64]);
+	unlock_page((unsigned long) &sys_call_table[__NR_open]);
+	unlock_page((unsigned long) &sys_call_table[__NR_execve]);
+	unlock_page((unsigned long) &sys_call_table[__NR_execve] + PAGE_SIZE);
+
+	printk("OK. Pages unlocked. now restoring..\n");
 	sys_call_table[__NR_getdents64] = (unsigned long *)orig_sys_getdents64;
 	sys_call_table[__NR_access] = (unsigned long *)orig_sys_access;
 	sys_call_table[__NR_stat64] = (unsigned long *)orig_sys_stat64;
 	sys_call_table[__NR_open] = (unsigned long *)orig_sys_open;
-#endif
-	restore_wp(cr0);
+
+	unlock_page(kallsyms_lookup_name("do_execve"));
+
+	printk("Unregistering jprobe\n");
 	unregister_jprobe(&my_jprobe);
+
+	//lock_page((unsigned long) sys_call_table);
 }
 
 module_init(init_hideroot);
