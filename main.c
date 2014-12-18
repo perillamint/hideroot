@@ -240,6 +240,9 @@ static int init_hideroot(void)
 
     //printk("Hook orig addr: 0x%p\n", hook -> callorig);
     //modifiedhook();
+
+    dumpcode((unsigned char*)hook -> o_opcode, hook -> opcode_size);
+    dumpcode((unsigned char*)hook -> n_opcode, hook -> opcode_size);
 	printk("Okay. Enjoy it!\n");
 	
 	return 0;

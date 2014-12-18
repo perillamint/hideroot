@@ -1,5 +1,6 @@
 obj-m := hideroot.o
 hideroot-objs += main.o
+hideroot-objs += dumpcode.o
 hideroot-objs += mmuhack.o
 hideroot-objs += gphook.o
 

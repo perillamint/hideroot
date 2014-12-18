@@ -1,6 +1,7 @@
 #include <linux/slab.h>
 #include <asm/cacheflush.h>
 #include "mmuhack.h"
+#include "dumpcode.h"
 #include "gphook.h"
 
 LIST_HEAD(hooklist);
@@ -13,6 +14,7 @@ void cacheflush ( void *begin, unsigned long size )
 {
     printk("Flushing cache.\n");
     //do_cache_op((unsigned long) begin, (unsigned long)begin + size, 0);
+    clean_dcache_area(begin, PAGE_SIZE);
     flush_icache_range((unsigned long) begin, (unsigned long)begin + PAGE_SIZE);
     //cpu_cache.flush_kern_all();
     //__cpuc_flush_icache_all();
@@ -35,10 +37,11 @@ int init_hook(void) {
 
 void cleanup_hook(void) {
     hook_t *hook;
+    hook_t *tmp;
 
-    list_for_each_entry(hook, &hooklist, list) {
+    list_for_each_entry_safe(hook, tmp, &hooklist, list) {
         printk("Removing 0x%p\n", hook);
-        remove_hook(hook);
+        remove_hook(hook -> addr);
     }
 
     printk("All done! freeing execmem.\n");
@@ -123,7 +126,7 @@ int remove_hook(void *addr) {
 
     list_for_each_entry(hook, &hooklist, list) {
         if(addr == hook -> addr) {
-            if(hook -> active) {
+            if(hook -> active == 1) {
                 disable_hook(addr);
             }
 
@@ -140,7 +143,7 @@ int enable_hook(void *addr) {
     hook_t *hook;
 
     list_for_each_entry(hook, &hooklist, list) {
-        if(addr == hook -> addr) {
+        if(addr == hook -> addr && hook -> active == 0) {
             pmd_t pmd_backup;
 
             pmd_backup = remove_pmd_flag((unsigned long) addr, PMD_SECT_APX);
@@ -166,13 +169,15 @@ int disable_hook(void *addr) {
     hook_t *hook;
 
     list_for_each_entry(hook, &hooklist, list) {
-        if(addr == hook -> addr) {
+        if(addr == hook -> addr && hook -> active == 1) {
             pmd_t pmd_backup;
 
             pmd_backup = remove_pmd_flag((unsigned long) addr, PMD_SECT_APX);
 
+            dumpcode((unsigned char *) addr, 16);
             memcpy(addr, hook->o_opcode, hook->opcode_size);
 
+            dumpcode((unsigned char *) addr, 16);
             restore_pmd((unsigned long) addr, pmd_backup);
 
             #if defined(__arm__)
