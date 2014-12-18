@@ -1,7 +1,7 @@
 #include <linux/kallsyms.h>
+#include <linux/slab.h>
 #include <asm/tlbflush.h>
 #include <asm/uaccess.h>
-#include <asm/pgtable.h>
 #include "mmuhack.h"
 
 void (*my_flush_tlb_kernel_page)(unsigned long);
@@ -31,7 +31,7 @@ pmd_t *get_pmd_addr(unsigned long addr)
 	return pmd;
 }
 
-pmd_t unlock_page(unsigned long addr)
+pmd_t remove_pmd_flag(unsigned long addr, unsigned long mask)
 {
 	pmd_t *pmd = get_pmd_addr(addr);
 	pmd_t *pmd_to_flush = pmd;
@@ -46,9 +46,9 @@ pmd_t unlock_page(unsigned long addr)
 	if ((saved_pmd & PMD_TYPE_MASK) != PMD_TYPE_SECT)
 		return saved_pmd;
 
-	if (*pmd & PMD_SECT_APX)
+	if (*pmd & mask)
 	{
-		*pmd &= ~PMD_SECT_APX;
+		*pmd &= ~mask;
 	}
 	else
 	{
@@ -80,4 +80,3 @@ void restore_pmd(unsigned long addr, pmd_t pmd_to_restore)
 
 	printk("Page 0x%lx - 0x%lx restored.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
 }
-

@@ -17,6 +17,18 @@
 #include "gphook.h"
 #include "dumpcode.h"
 
+#ifndef __NR_syscalls
+//TODO: find way to get rid of this.
+#define __NR_syscalls 500
+#endif
+
+#ifndef NR_syscalls
+#define NR_syscalls __NR_syscalls
+#endif
+
+unsigned long **sys_call_table;
+unsigned long flags;
+
 int hide_uid[100];
 unsigned int hide_uid_count=0;
 module_param_array(hide_uid, int, &hide_uid_count, 0644);
@@ -24,8 +36,6 @@ module_param_array(hide_uid, int, &hide_uid_count, 0644);
 char *hide_file[100] = {"bin/su", "bin/busybox", "app/Superuser.apk", "bin/proc", "bin/librank", };
 unsigned int hide_file_cnt=1;
 module_param_array(hide_file, charp, &hide_file_cnt, 0644);
-
-hook_t *hook;
 
 int check_hide_uid(void)
 {
@@ -50,6 +60,32 @@ int check_hide_file(const char *filename)
 	}
 
 	return 0;
+}
+
+asmlinkage int my_do_execve(char __user * filename,
+			    const char __user * const __user * argv,
+			    const char __user * const __user * envp, struct pt_regs *regs);
+
+static struct jprobe my_jprobe = {
+	.entry = (kprobe_opcode_t *) my_do_execve
+};
+
+static unsigned long **find_sys_call_table(void)
+{
+	unsigned long int offset = PAGE_OFFSET;
+	unsigned long **sct;
+
+	while (offset < ULLONG_MAX)
+	{
+		sct = (unsigned long **)offset;
+
+		if (sct[__NR_close] == (unsigned long *)sys_close)
+			return sct;
+
+		offset += sizeof(void *);
+	}
+
+	return NULL;
 }
 
 long (*orig_sys_getdents64) (unsigned int fd,
@@ -209,37 +245,65 @@ asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mod
 	return orig_sys_open(filename, flags, mode);
 }
 
-long hook_sysopen(const char __user * filename, int flags, umode_t mode) {
-    long (*modifiedhook)(const char __user * filename, int flags, umode_t mode) = hook -> callorig;
-    printk("Awesome!\n");
-    return modifiedhook(filename, flags, mode);
-}
-
 static int init_hideroot(void)
 {
-//    void (*modifiedhook)(void);
-    void *hooktarg;
+	int ret;
+	unsigned long int i;
+	pmd_t pmd_backup[100] = {0, };
+	unsigned long int pmd_cnt;
 
 	init_mmuhack();
-    if(init_hook() == -1) {
-        return -1;
-    }
 
-    hooktarg = (void*)kallsyms_lookup_name("sys_open");
-
-    dumpcode((unsigned char*)hooktarg, 128);
 	printk("Hooking...\n");
-    hook = install_hook(hooktarg, hook_sysopen);
-    enable_hook(hooktarg);
+	sys_call_table = find_sys_call_table();
+	printk("%p\n", sys_call_table);
 
-    dumpcode((unsigned char*)hooktarg, 128);
-    //printk("Running 0x%p\n", print_some_msg);
-    //print_some_msg();
-    //hook_print_some_msg();
-    //modifiedhook = hook -> callorig;
+	printk("Backing up original address...\n");
+	orig_sys_getdents64 = (void *)sys_call_table[__NR_getdents64];
+	orig_sys_access = (void *)sys_call_table[__NR_access];
+	orig_sys_stat64 = (void *)sys_call_table[__NR_stat64];
+	orig_sys_open = (void *)sys_call_table[__NR_open];
 
-    //printk("Hook orig addr: 0x%p\n", hook -> callorig);
-    //modifiedhook();
+	printk("Unlocking...\n");
+
+	pmd_cnt = (unsigned long)((&sys_call_table[NR_syscalls] - sys_call_table) / (~PAGE_MASK) + 2);
+
+	printk("Number of pages needed to unlocked: %ld\n", pmd_cnt);
+
+	for (i = 0; i < pmd_cnt; i++)
+	{
+		pmd_backup[i] = unlock_page((unsigned long) sys_call_table + (~PAGE_MASK) * i);
+	}
+
+	printk("OK. pages unlocked. Starting hook\n");
+	sys_call_table[__NR_getdents64] = (unsigned long *)my_sys_getdents64;
+	sys_call_table[__NR_access] = (unsigned long *)my_sys_access;
+	sys_call_table[__NR_stat64] = (unsigned long *)my_sys_stat64;
+	sys_call_table[__NR_open] = (unsigned long *)my_sys_open;
+
+	unlock_page(kallsyms_lookup_name("do_execve"));
+
+	// Hook do_execve using jprobe
+	my_jprobe.kp.addr = (kprobe_opcode_t *) kallsyms_lookup_name("do_execve");
+	if (!my_jprobe.kp.addr)
+	{
+		printk("Couldn't find %s to plant jprobe\n", "do_execve");
+		return -1;
+	}
+
+	if ((ret = register_jprobe(&my_jprobe)) < 0)
+	{
+		printk("register_jprobe failed, returned %d\n", ret);
+		return -1;
+	}
+	printk("Planted jprobe at %p, handler addr %p\n", my_jprobe.kp.addr, my_jprobe.entry);
+	
+	printk("OK. now restoring PMDs.\n");	
+	for (i = 0; i < pmd_cnt; i++)
+	{
+		restore_pmd((unsigned long) sys_call_table + (~PAGE_MASK) * i, pmd_backup[i]);
+	}
+
 	printk("Okay. Enjoy it!\n");
 	
 	return 0;
@@ -248,14 +312,48 @@ static int init_hideroot(void)
 
 static void cleanup_hideroot(void)
 {
-    cleanup_hook();
+	unsigned long int i;
+	pmd_t pmd_backup[100] = {0, };
+	unsigned long int pmd_cnt;
+
 	printk("Unlocking...\n");
 
+	pmd_cnt = (unsigned long)((&sys_call_table[NR_syscalls] - sys_call_table) / (~PAGE_MASK) + 2);
 
+	for (i = 0; i < pmd_cnt; i++)
+	{
+		pmd_backup[i] = unlock_page((unsigned long) sys_call_table + (~PAGE_MASK) * i);
+	}
+
+	printk("OK. Pages unlocked. now restoring..\n");
+	sys_call_table[__NR_getdents64] = (unsigned long *)orig_sys_getdents64;
+	sys_call_table[__NR_access] = (unsigned long *)orig_sys_access;
+	sys_call_table[__NR_stat64] = (unsigned long *)orig_sys_stat64;
+	sys_call_table[__NR_open] = (unsigned long *)orig_sys_open;
+
+	printk("Unregistering jprobe\n");
+	unregister_jprobe(&my_jprobe);
+
+	printk("OK. now restoring PMDs.\n");	
+	for (i = 0; i < pmd_cnt; i++)
+	{
+		restore_pmd((unsigned long) sys_call_table + (~PAGE_MASK) * i, pmd_backup[i]);
+	}
 	printk("Okay. bye.\n");
 }
 
-module_init(init_hideroot);
-module_exit(cleanup_hideroot);
+static int init_new_hideroot(void) {
+    printk("Hideroot MkII\n");
+
+    //
+    return 0;
+}
+
+static void cleanup_new_hideroot(void) {
+    //
+}
+
+module_init(init_new_hideroot);
+module_exit(cleanup_new_hideroot);
 
 MODULE_LICENSE("GPL");

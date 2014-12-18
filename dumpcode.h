@@ -15,7 +15,8 @@ void printchar(unsigned char c)
 			printk(".");
  
 }
- void dumpcode(unsigned char *buff, int len)
+
+void dumpcode(unsigned char *buff, int len)
 {
 	int i;
 		printk("----------BEGIN DUMP----------\n");
