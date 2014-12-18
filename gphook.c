@@ -1,7 +1,6 @@
 #include <linux/slab.h>
 #include <asm/cacheflush.h>
 #include "mmuhack.h"
-#include "dumpcode.h"
 #include "gphook.h"
 
 LIST_HEAD(hooklist);
@@ -174,10 +173,8 @@ int disable_hook(void *addr) {
 
             pmd_backup = remove_pmd_flag((unsigned long) addr, PMD_SECT_APX);
 
-            dumpcode((unsigned char *) addr, 16);
             memcpy(addr, hook->o_opcode, hook->opcode_size);
 
-            dumpcode((unsigned char *) addr, 16);
             restore_pmd((unsigned long) addr, pmd_backup);
 
             #if defined(__arm__)
