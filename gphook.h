@@ -41,6 +41,7 @@ struct hook_s {
     int addroffset;
     int opcode_size;
     int active;
+    int active_chg;
     void *callorig;
     char o_opcode[HOOKCODE_SIZE];
     char n_opcode[HOOKCODE_SIZE];
