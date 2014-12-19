@@ -1,5 +1,6 @@
 #include <linux/slab.h>
 #include <asm/cacheflush.h>
+#include <asm/outercache.h>
 #include "mmuhack.h"
 #include "gphook.h"
 
@@ -9,16 +10,26 @@ void *execmem = NULL;
 void *execmem_lastused = NULL;
 pmd_t execmem_pmd;
 
-void cacheflush ( void *begin, unsigned long size )
+static inline void cacheflush ( void *begin, unsigned long size )
 {
-    printk("Flushing cache.\n");
+    flush_icache_range((unsigned long) begin, (unsigned long)begin + size);
+    printk("Cache flushed..\n");
+
+
+   // __flush_icache_all_v7_smp();
+   // __flush_icache_all_generic();
+   // __flush_icache_all();
     //do_cache_op((unsigned long) begin, (unsigned long)begin + size, 0);
-    clean_dcache_area(begin, PAGE_SIZE);
-    flush_icache_range((unsigned long) begin, (unsigned long)begin + PAGE_SIZE);
+//    clean_dcache_area(begin, PAGE_SIZE);
     //cpu_cache.flush_kern_all();
     //__cpuc_flush_icache_all();
-
+//    cpu_cache.flush_kern_louis()
 //    asm ("MOV r0, #0\nMCR p15, 0, r0, c7, c5, 0;");
+
+//    __asm volatile (
+//          "MOV r0, #0 \n"
+//          "MCR p15, 0, r0, c7, c1, 0 \n"
+//          "MCR p15, 0, r0, c7, c5, 0");
 }
 
 int init_hook(void) {
@@ -151,8 +162,9 @@ int enable_hook(void *addr) {
 
             restore_pmd((unsigned long) addr, pmd_backup);
 
+            flush_icache_range((uintptr_t)addr, (uintptr_t)addr + 16);
             #if defined(__arm__)
-            cacheflush(addr, hook -> opcode_size);
+            //cacheflush(addr, hook -> opcode_size);
             #endif
 
             hook -> active = 1;
@@ -177,8 +189,9 @@ int disable_hook(void *addr) {
 
             restore_pmd((unsigned long) addr, pmd_backup);
 
+            flush_icache_range((uintptr_t)addr, (uintptr_t)addr + 16);
             #if defined(__arm__)
-            cacheflush(addr, hook->opcode_size);
+            //cacheflush(addr, hook->opcode_size);
             #endif
 
             hook -> active = 0;
