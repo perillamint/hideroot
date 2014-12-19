@@ -1,6 +1,8 @@
 #include <linux/slab.h>
+#include <linux/stop_machine.h>
 #include <asm/cacheflush.h>
 #include <asm/outercache.h>
+#include <asm/smp_plat.h>
 #include "mmuhack.h"
 #include "gphook.h"
 
@@ -12,24 +14,11 @@ pmd_t execmem_pmd;
 
 static inline void cacheflush ( void *begin, unsigned long size )
 {
-    flush_icache_range((unsigned long) begin, (unsigned long)begin + size);
-    printk("Cache flushed..\n");
-
-
-   // __flush_icache_all_v7_smp();
-   // __flush_icache_all_generic();
-   // __flush_icache_all();
-    //do_cache_op((unsigned long) begin, (unsigned long)begin + size, 0);
-//    clean_dcache_area(begin, PAGE_SIZE);
-    //cpu_cache.flush_kern_all();
-    //__cpuc_flush_icache_all();
-//    cpu_cache.flush_kern_louis()
-//    asm ("MOV r0, #0\nMCR p15, 0, r0, c7, c5, 0;");
-
-//    __asm volatile (
-//          "MOV r0, #0 \n"
-//          "MCR p15, 0, r0, c7, c1, 0 \n"
-//          "MCR p15, 0, r0, c7, c5, 0");
+    #if defined(__arm__)
+    flush_icache_range((uintptr_t) begin, (uintptr_t)begin + size);
+    #else
+    printk("Cacheflush not needed.\n");
+    #endif
 }
 
 int init_hook(void) {
@@ -81,26 +70,8 @@ void register_origcall(hook_t *hook) {
 hook_t *install_hook(void *addr, void *hookaddr) {
     char hookcode[HOOKCODE_SIZE];
     hook_t *hook = 0x00000000;
-    
-    #if defined(__arm__)
-    //OK. We are in ARM. We need to check system is using THUMB or not.
-    //TODO: Find neat way instead dividing addr with 4.
 
-    //Ok. Here is hacky way to check function is THUMB or not.
-    //MOV R12, R13 occurs every function prologue with ARM.
-    //check 0xE1A0C0D0 - MOV R12, R13 in non-thumb.
-    //TODO: Is it gcc specific?
-
-    //if(*((unsigned long *)addr) == 0xE1A0C0D0) { //not thumb.
-    if((unsigned long)addr % 4 == 0) {
-        printk("0x%p is not thumb.\n", addr);
-        memcpy(hookcode, HOOKCODE, HOOKCODE_SIZE);
-    } else {
-        printk("0x%p is thumb.\n", addr);
-        memcpy(hookcode, HOOKCODE_THUMB, HOOKCODE_SIZE);
-    }
-
-    #endif
+    memcpy(hookcode, HOOKCODE, HOOKCODE_SIZE);
 
     //Assuming 32-bit environment...
     memcpy(hookcode + HOOKCODE_ADDROFFSET, &hookaddr, 4);
@@ -149,25 +120,51 @@ int remove_hook(void *addr) {
     return -1;
 }
 
+int __enable_hook(hook_t *hook) {
+    pmd_t pmd_backup;
+
+    pmd_backup = remove_pmd_flag((uintptr_t)hook -> addr, PMD_SECT_APX);
+
+    memcpy(hook -> addr, hook -> n_opcode, hook -> opcode_size);
+
+    restore_pmd((uintptr_t)hook -> addr, pmd_backup);
+
+    cacheflush(hook -> addr, hook -> opcode_size);
+
+    hook -> active = 1;
+
+    return 0;
+}
+
+int __disable_hook(hook_t *hook) {
+    pmd_t pmd_backup;
+
+    pmd_backup = remove_pmd_flag((uintptr_t)hook -> addr, PMD_SECT_APX);
+
+    memcpy(hook -> addr, hook -> o_opcode, hook -> opcode_size);
+
+    restore_pmd((uintptr_t)hook -> addr, pmd_backup);
+
+    cacheflush(hook -> addr, hook -> opcode_size);
+
+    hook -> active = 0;
+
+    return 0;
+}
+
 int enable_hook(void *addr) {
     hook_t *hook;
 
     list_for_each_entry(hook, &hooklist, list) {
         if(addr == hook -> addr && hook -> active == 0) {
-            pmd_t pmd_backup;
+            if (cache_ops_need_broadcast()) {
+                printk("stop_machine is needed.\n");
+                stop_machine((int (*)(void*)) __enable_hook, hook, cpu_online_mask);
+            } else {
+                //TODO: check straddles_word
 
-            pmd_backup = remove_pmd_flag((unsigned long) addr, PMD_SECT_APX);
-
-            memcpy(addr, hook->n_opcode, hook->opcode_size);
-
-            restore_pmd((unsigned long) addr, pmd_backup);
-
-            flush_icache_range((uintptr_t)addr, (uintptr_t)addr + 16);
-            #if defined(__arm__)
-            //cacheflush(addr, hook -> opcode_size);
-            #endif
-
-            hook -> active = 1;
+                __enable_hook(hook);
+            }
 
             return 0;
         }
@@ -181,20 +178,14 @@ int disable_hook(void *addr) {
 
     list_for_each_entry(hook, &hooklist, list) {
         if(addr == hook -> addr && hook -> active == 1) {
-            pmd_t pmd_backup;
+            if (cache_ops_need_broadcast()) {
+                printk("stop_machine is needed.\n");
+                stop_machine((int (*)(void*)) __disable_hook, hook, cpu_online_mask);
+            } else {
+                //TODO: check straddles_word
 
-            pmd_backup = remove_pmd_flag((unsigned long) addr, PMD_SECT_APX);
-
-            memcpy(addr, hook->o_opcode, hook->opcode_size);
-
-            restore_pmd((unsigned long) addr, pmd_backup);
-
-            flush_icache_range((uintptr_t)addr, (uintptr_t)addr + 16);
-            #if defined(__arm__)
-            //cacheflush(addr, hook->opcode_size);
-            #endif
-
-            hook -> active = 0;
+                __disable_hook(hook);
+            }
 
             return 0;
         }

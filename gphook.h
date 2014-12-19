@@ -17,8 +17,12 @@
 
 #if defined(__arm__)
 
+#ifndef CONFIG_THUMB2_KERNEL
 #define HOOKCODE "\x00\xF0\x9F\xE5\x00\x00\x00\x00\xEF\xBE\xAD\xDE"
-#define HOOKCODE_THUMB "\x01\xA0\x00\x68\x87\x46\x00\xBF\xEF\xBE\xAD\xDE"
+#else
+#define HOOKCODE "\x01\xA0\x00\x68\x87\x46\x00\xBF\xEF\xBE\xAD\xDE"
+#endif
+
 #define HOOKCODE_SIZE 12
 #define HOOKCODE_ADDROFFSET 8
 
