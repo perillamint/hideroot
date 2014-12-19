@@ -29,8 +29,7 @@
 #elif defined(__mips__)
 #error "MIPS is not yet supported!"
 #elif defined(__x86__)
-#error "x86 is not yet supported!"
-#elif defined(__x86_64__)
+
 #error "AMD64 is not yet supported!"
 #else
 #error "This architecture is not supported!"
@@ -50,6 +49,7 @@ struct hook_s {
 
 typedef struct hook_s hook_t;
 
+void cacheflush(void *begin, unsigned long size);
 int init_hook(void);
 void cleanup_hook(void);
 hook_t *install_hook(void *addr, void *hookaddr);

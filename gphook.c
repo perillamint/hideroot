@@ -1,8 +1,10 @@
 #include <linux/slab.h>
+#include <linux/kallsyms.h>
 #include <linux/stop_machine.h>
 #include <asm/cacheflush.h>
 #include <asm/outercache.h>
 #include <asm/smp_plat.h>
+#include <asm/mmu_writeable.h>
 #include "mmuhack.h"
 #include "gphook.h"
 
@@ -12,10 +14,22 @@ void *execmem = NULL;
 void *execmem_lastused = NULL;
 pmd_t execmem_pmd;
 
-static inline void cacheflush ( void *begin, unsigned long size )
+uint32_t swap_uint32( uint32_t val )
+{
+    val = ((val << 8) & 0xFF00FF00 ) | ((val >> 8) & 0xFF00FF ); 
+    return (val << 16) | (val >> 16);
+}
+
+
+void cacheflush ( void *begin, unsigned long size )
 {
     #if defined(__arm__)
-    flush_icache_range((uintptr_t) begin, (uintptr_t)begin + size);
+    smp_mb();
+    mb();
+    clean_dcache_area(begin, size);
+    smp_mb();
+    mb();
+    flush_icache_range((uintptr_t)begin, (uintptr_t)begin + size);
     #else
     printk("Cacheflush not needed.\n");
     #endif
@@ -123,19 +137,25 @@ int remove_hook(void *addr) {
 
 int __apply_hook(hook_t *hook) {
     pmd_t pmd_backup;
+    //int i;
 
     pmd_backup = remove_pmd_flag((uintptr_t)hook -> addr, PMD_SECT_APX);
 
     if(hook -> active_chg) {
+        //for (i = 0; i < hook -> opcode_size / 4; i++) {
+        //    patch_text(hook -> addr, swap_uint32(*(unsigned int*)(hook -> n_opcode + 4 * i)));
+        //}
         memcpy(hook -> addr, hook -> n_opcode, hook -> opcode_size);
         hook -> active = 1;
     } else {
+        //for (i = 0; i < hook -> opcode_size / 4; i++) {
+        //    patch_text(hook -> addr, swap_uint32(*(unsigned int*)(hook -> o_opcode + 4 * i)));
+        //}
         memcpy(hook -> addr, hook -> o_opcode, hook -> opcode_size);
         hook -> active = 0;
     }
 
     restore_pmd((uintptr_t)hook -> addr, pmd_backup);
-
     cacheflush(hook -> addr, hook -> opcode_size);
 
     return 0;
@@ -153,7 +173,8 @@ int __change_hook(void *addr, int active_chg) {
             } else {
                 //TODO: check straddles_word
 
-                __apply_hook(hook);
+                stop_machine((int (*)(void*)) __apply_hook, hook, cpu_online_mask);
+                //__apply_hook(hook);
             }
 
             return 0;

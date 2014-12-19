@@ -49,17 +49,15 @@ pmd_t remove_pmd_flag(unsigned long addr, unsigned long mask)
 	if (*pmd & mask)
 	{
 		*pmd &= ~mask;
-	}
-	else
-	{
-		printk("Uh... I think this page (0x%lx - 0x%lx) is already unlocked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK));
+	} else {
+		printk("Uh... I think this page (0x%08lX - 0x%08lX) s flag 0x%08lX is already removed.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK), mask);
 		return saved_pmd;
 	}
 
 	flush_pmd_entry(pmd_to_flush);
 	my_flush_tlb_kernel_page(addr & PAGE_MASK);
 
-	printk("Page 0x%lx - 0x%lx unlocked.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
+	printk("Page 0x%08lX - 0x%08lX pmd flag 0x%08lX removed.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK), mask);
 	return saved_pmd;
 }
 
@@ -71,12 +69,12 @@ void restore_pmd(unsigned long addr, pmd_t pmd_to_restore)
 		pmd++;
 	}
 
-	printk("Restoring PMD 0x%lx to 0x%lx\n", (unsigned long) pmd_to_restore, addr);
+	printk("Restoring PMD 0x%08lX to 0x%08lX\n", (unsigned long) pmd_to_restore, addr);
 
 	*pmd = pmd_to_restore;
 
 	flush_pmd_entry(pmd);
 	my_flush_tlb_kernel_page(addr & PAGE_MASK);
 
-	printk("Page 0x%lx - 0x%lx restored.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
+	printk("Page 0x%08lX - 0x%08lX restored.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
 }

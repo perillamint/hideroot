@@ -26,8 +26,8 @@ void dumpcode(unsigned char *buff, int len)
 		for(i=0;i<len;i++)
 		{
 		if(i%16==0)
-			printk("0x%08x  ",(int)&buff[i]);
-            printk("%02x ",buff[i]);
+			printk("0x%08X  ",(int)&buff[i]);
+            printk("%02X ",buff[i]);
 		if(i%16-15==0)
 		{
 			int j;
