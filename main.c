@@ -220,7 +220,6 @@ static int init_hideroot(void)
 //    void (*modifiedhook)(void);
     void *hooktarg;
 
-	init_mmuhack();
     if(init_hook() == -1) {
         return -1;
     }
@@ -233,7 +232,7 @@ static int init_hideroot(void)
     enable_hook(hooktarg);
 
     dumpcode((unsigned char*)hooktarg, 128);
-    cacheflush(hooktarg, 16);
+    //cacheflush(hooktarg, 16);
     //printk("Running 0x%p\n", print_some_msg);
     //print_some_msg();
     //hook_print_some_msg();

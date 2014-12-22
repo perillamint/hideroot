@@ -1,10 +1,12 @@
 #include <linux/slab.h>
+#include <linux/mm.h>
 #include <linux/kallsyms.h>
 #include <linux/stop_machine.h>
 #include <asm/cacheflush.h>
 #include <asm/outercache.h>
 #include <asm/smp_plat.h>
 #include <asm/mmu_writeable.h>
+#include <asm/tlbflush.h>
 #include "mmuhack.h"
 #include "gphook.h"
 
@@ -12,24 +14,55 @@ LIST_HEAD(hooklist);
 
 void *execmem = NULL;
 void *execmem_lastused = NULL;
-pmd_t execmem_pmd;
-
-uint32_t swap_uint32( uint32_t val )
-{
-    val = ((val << 8) & 0xFF00FF00 ) | ((val >> 8) & 0xFF00FF ); 
-    return (val << 16) | (val >> 16);
-}
-
+mmuhack_t execmem_hack;
 
 void cacheflush ( void *begin, unsigned long size )
 {
+    uintptr_t __volatile__ beginaddr = (uintptr_t)begin;
+    uintptr_t __volatile__ endaddr = (uintptr_t)begin + size;
     #if defined(__arm__)
-    smp_mb();
-    mb();
-    clean_dcache_area(begin, size);
-    smp_mb();
-    mb();
-    flush_icache_range((uintptr_t)begin, (uintptr_t)begin + size);
+    printk("Flushing 0x%08lX-0x%08lX.\n", beginaddr, endaddr);
+    __asm__ __volatile__ (
+            "LDR r2, %0\n"
+            "LDR r3, %1\n"
+            "MRC p15, 0, r0, c0, c0, 1\n" //Read CTR.
+            "LSR r0, r0, #16\n"           //Shift 16bit
+            "AND r0, r0, #0b1111\n"       //get dcache line size.
+            "MOV r1, #4\n"                //word size: 4byte
+            "MOV r1, r1, lsl r0\n"        //r1 = r1 >> r0. Now r1 has dcache line size.
+            "SUB r0, r1, #1\n"            //r1 - 1 = bitmask of dcache line size.
+            "BIC r0, r2, r0\n"            //Calculate dcache to flush \w beginaddr and bitmask
+            "DSB\n"
+            "NOP\n"
+            //"ALT_SMP(W(DSB))\n"           //dmb(); 
+            //"ALT_UP(W(NOP))\n"            //We don't need barrier in UP.
+            "1:\n"
+            "MCR p15, 0, r0, c7, c11, 1\n"//Finally, flush dcache.
+            "ADD r0, r0, r1\n"            //Add dcache line size.
+            "CMP r0, r3\n"                //Check we flushed all.
+            "BLO 1b\n"                    //Loop until we flush all.
+            "DSB ishst\n"
+            "MRC p15, 0, r0, c0, c0, 1\n" //Read CTR.
+            "AND r0, r0, #0b1111\n"       //get icache line size
+            "MOV r1, #4\n"                //word size: 4byte
+            "MOV r1, r1, lsl r0\n"        //r1 = r1 >> r0. Now r1 has icache line size
+            "SUB r0, r1, #1\n"            //r1 - 1 = bitmask of icache line size
+            "BIC r0, r2, r0\n"            //Calculate icache to flush \w beginaddr and bitmask
+            "2:\n"
+            "MCR p15, 0, r0, c7, c5, 1\n" //Flush icache.
+            "ADD r0, r0, r1\n"            //Add icache line size.
+            "CMP r0, r3\n"                //Check we flushed all.
+            "BLO 2b\n"                    //Loop until we flush all.
+            "MOV r0, #0\n"
+            "MCR p15, 0, r0, c7, c1, 6\n" //Invalidate BTB Inner sharable.
+            "MCR P15, 0, r0, c7, c5, 6\n" //Invalidate BTB
+            "DSB ishst\n"
+            "ISB\n"
+            : "=m" (beginaddr), "=m" (endaddr));
+
+    printk("Address 0x%08lX-0x%08lX flushed.\n", beginaddr, endaddr);
+
+    //TODO: USE ALT_SMP, ALT_UP. https://git.kernel.org/cgit/linux/kernel/git/next/linux-next.git/tree/arch/arm/mm/cache-v7.S
     #else
     printk("Cacheflush not needed.\n");
     #endif
@@ -39,11 +72,13 @@ int init_hook(void) {
     execmem = kmalloc(PAGE_SIZE, GFP_KERNEL);
     execmem_lastused = execmem;
 
+    init_mmuhack(&execmem_hack, (uintptr_t) execmem);
+
     if(execmem == NULL) {
         return -1;
     }
 
-    execmem_pmd = remove_pmd_flag((unsigned long)execmem, PMD_SECT_XN);
+    remove_pmd_flag(&execmem_hack, PMD_SECT_XN);
 
     return 0;
 }
@@ -58,7 +93,7 @@ void cleanup_hook(void) {
     }
 
     printk("All done! freeing execmem.\n");
-    restore_pmd((unsigned long)execmem, execmem_pmd);
+    restore_pmd_flag(&execmem_hack);
     kfree(execmem);
 }
 
@@ -136,27 +171,30 @@ int remove_hook(void *addr) {
 }
 
 int __apply_hook(hook_t *hook) {
-    pmd_t pmd_backup;
-    //int i;
+    mmuhack_t hook_hack;
+    int i;
 
-    pmd_backup = remove_pmd_flag((uintptr_t)hook -> addr, PMD_SECT_APX);
+    init_mmuhack(&hook_hack, (uintptr_t)hook -> addr);
+    remove_pmd_flag(&hook_hack, PMD_SECT_APX);
 
     if(hook -> active_chg) {
-        //for (i = 0; i < hook -> opcode_size / 4; i++) {
-        //    patch_text(hook -> addr, swap_uint32(*(unsigned int*)(hook -> n_opcode + 4 * i)));
-        //}
-        memcpy(hook -> addr, hook -> n_opcode, hook -> opcode_size);
+        for (i = 0; i < hook -> opcode_size / 4; i++) {
+            *(uint32_t*)(hook -> addr + 4 * i) = *(uint32_t*)(hook -> n_opcode + 4 * i);
+        }
+        //memcpy(hook -> addr, hook -> n_opcode, hook -> opcode_size);
         hook -> active = 1;
     } else {
-        //for (i = 0; i < hook -> opcode_size / 4; i++) {
-        //    patch_text(hook -> addr, swap_uint32(*(unsigned int*)(hook -> o_opcode + 4 * i)));
-        //}
-        memcpy(hook -> addr, hook -> o_opcode, hook -> opcode_size);
+        for (i = 0; i < hook -> opcode_size / 4; i++) {
+            *(uint32_t*)(hook -> addr + 4 * i) = *(uint32_t*)(hook -> o_opcode + 4 * i);
+        }
+        //memcpy(hook -> addr, hook -> o_opcode, hook -> opcode_size);
         hook -> active = 0;
     }
 
-    restore_pmd((uintptr_t)hook -> addr, pmd_backup);
+
     cacheflush(hook -> addr, hook -> opcode_size);
+
+    restore_pmd_flag(&hook_hack);
 
     return 0;
 }
@@ -173,8 +211,8 @@ int __change_hook(void *addr, int active_chg) {
             } else {
                 //TODO: check straddles_word
 
-                stop_machine((int (*)(void*)) __apply_hook, hook, cpu_online_mask);
-                //__apply_hook(hook);
+                //stop_machine((int (*)(void*)) __apply_hook, hook, cpu_online_mask);
+                __apply_hook(hook);
             }
 
             return 0;

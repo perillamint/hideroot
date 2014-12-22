@@ -4,77 +4,96 @@
 #include <asm/uaccess.h>
 #include "mmuhack.h"
 
-void (*my_flush_tlb_kernel_page)(unsigned long);
+void (*my_flush_tlb_kernel_page)(unsigned long) = NULL;
+void (*my_update_mmu_cache)(struct vm_area_struct *vma, unsigned long) = NULL;
 
-void (*get_flush_tlb_kernel_page(void))(unsigned long)
+int get_func(void)
 {
-	void (*func)(unsigned long) = (void*) kallsyms_lookup_name("flush_tlb_kernel_page");
-	printk("flush_tlb_kernel_page found at %p\n", func);
-	return func;
+	my_flush_tlb_kernel_page = (void*) kallsyms_lookup_name("flush_tlb_kernel_page");
+	my_update_mmu_cache = (void*) kallsyms_lookup_name("update_mmu_cache");
+	printk("flush_tlb_kernel_page found at %p\n", my_flush_tlb_kernel_page);
+	printk("update_mmu_cache found at %p\n", my_update_mmu_cache);
+
+    if( my_update_mmu_cache == NULL || my_flush_tlb_kernel_page == NULL )
+        return -1;
+
+    return 0;
 }
 
-void init_mmuhack()
-{
-	my_flush_tlb_kernel_page = get_flush_tlb_kernel_page();
-}
-
-pmd_t *get_pmd_addr(unsigned long addr)
+int init_mmuhack(mmuhack_t *mmuhack, uintptr_t addr)
 {
 	struct task_struct *tsk = current;
 	struct mm_struct *mm = tsk->active_mm;
-	pgd_t *pgd = pgd_offset(mm, addr);
-	pud_t *pud = pud_offset(pgd, addr);
-	pmd_t *pmd = pmd_offset(pud, addr);
+
+    pgd_t *pgd = NULL;
+    pud_t *pud = NULL;
+    pmd_t *pmd = NULL;
+
+    if(my_flush_tlb_kernel_page == NULL) {
+        if(get_func() == -1) {
+            printk("WARN: some function is not exist.");
+            //return -1;
+        }
+    }
+
+    //my_update_mmu_cache(mm -> vm_area_struct, addr, 
+	//my_flush_tlb_kernel_page(addr & PAGE_MASK);
+    printk("Getting pgd\n");
+	pgd = pgd_offset(mm, addr);
+    printk("Getting pud\n");
+	pud = pud_offset(pgd, addr);
+    printk("Getting pmd\n");
+	pmd = pmd_offset(pud, addr);
 
 	printk("Get PMD of 0x%lx: 0x%p\n", addr, pmd);
 	
-	return pmd;
+	mmuhack -> pmd = pmd;
+    mmuhack -> addr = addr;
+
+    return 0;
 }
 
-pmd_t remove_pmd_flag(unsigned long addr, unsigned long mask)
+void remove_pmd_flag(mmuhack_t *mmuhack, unsigned long mask)
 {
-	pmd_t *pmd = get_pmd_addr(addr);
-	pmd_t *pmd_to_flush = pmd;
-	pmd_t saved_pmd;
+    pmd_t *pmd = mmuhack -> pmd;
+	pmd_t *pmd_to_flush = mmuhack -> pmd;
 
-	if (addr & SECTION_SIZE) {
-		pmd++;
+	if (mmuhack -> addr & SECTION_SIZE) {
+	    pmd++;
 	}
 
-	saved_pmd = *pmd;
+	mmuhack -> origpmd = *pmd;
 
-	if ((saved_pmd & PMD_TYPE_MASK) != PMD_TYPE_SECT)
-		return saved_pmd;
+	if ((mmuhack -> origpmd & PMD_TYPE_MASK) != PMD_TYPE_SECT)
+		return ;
 
 	if (*pmd & mask)
 	{
 		*pmd &= ~mask;
 	} else {
-		printk("Uh... I think this page (0x%08lX - 0x%08lX) s flag 0x%08lX is already removed.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK), mask);
-		return saved_pmd;
+		printk("Uh... I think this page (0x%08lX - 0x%08lX) s flag 0x%08lX is already removed.\n", mmuhack -> addr & PAGE_MASK, (mmuhack -> addr & PAGE_MASK) + (~PAGE_MASK), mask);
+		return ;
 	}
 
 	flush_pmd_entry(pmd_to_flush);
-	my_flush_tlb_kernel_page(addr & PAGE_MASK);
+	my_flush_tlb_kernel_page(mmuhack -> addr & PAGE_MASK);
 
-	printk("Page 0x%08lX - 0x%08lX pmd flag 0x%08lX removed.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK), mask);
-	return saved_pmd;
+	printk("Page 0x%08lX - 0x%08lX pmd flag 0x%08lX removed.\n", mmuhack -> addr & PAGE_MASK, (mmuhack -> addr & PAGE_MASK) + (~PAGE_MASK), mask);
 }
 
-void restore_pmd(unsigned long addr, pmd_t pmd_to_restore)
+void restore_pmd_flag(mmuhack_t *mmuhack)
 {
-	pmd_t *pmd = get_pmd_addr(addr);
-
-	if (addr & SECTION_SIZE) {
+    pmd_t *pmd = mmuhack -> pmd;
+	if (mmuhack -> addr & SECTION_SIZE) {
 		pmd++;
 	}
 
-	printk("Restoring PMD 0x%08lX to 0x%08lX\n", (unsigned long) pmd_to_restore, addr);
+	printk("Restoring PMD 0x%08lX to 0x%08lX\n", (unsigned long) mmuhack -> origpmd, mmuhack -> addr);
 
-	*pmd = pmd_to_restore;
+	*pmd = mmuhack -> origpmd;
 
 	flush_pmd_entry(pmd);
-	my_flush_tlb_kernel_page(addr & PAGE_MASK);
+	my_flush_tlb_kernel_page(mmuhack -> addr & PAGE_MASK);
 
-	printk("Page 0x%08lX - 0x%08lX restored.\n", addr & PAGE_MASK, (addr & PAGE_MASK) + (~PAGE_MASK) - 1);
+	printk("Page 0x%08lX - 0x%08lX restored.\n", mmuhack -> addr & PAGE_MASK, (mmuhack -> addr & PAGE_MASK) + (~PAGE_MASK));
 }
