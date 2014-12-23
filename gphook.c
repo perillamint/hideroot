@@ -204,33 +204,30 @@ int __apply_hook(hook_t *hook) {
     return 0;
 }
 
-int __change_hook(void *addr, int active_chg) {
-    hook_t *hook;
+int __change_hook(hook_t *hook, int active_chg) {
 
-    list_for_each_entry(hook, &hooklist, list) {
-        if(addr == hook -> addr && hook -> active != active_chg) {
-            hook -> active_chg = active_chg;
-            if (cache_ops_need_broadcast()) {
-                printk("stop_machine is needed.\n");
-                stop_machine((int (*)(void*)) __apply_hook, hook, cpu_online_mask);
-            } else {
-                //TODO: check straddles_word
+    if(hook -> active != active_chg) {
+        hook -> active_chg = active_chg;
+        if (cache_ops_need_broadcast()) {
+            printk("stop_machine is needed.\n");
+            stop_machine((int (*)(void*)) __apply_hook, hook, cpu_online_mask);
+        } else {
+            //TODO: check straddles_word
 
-                //stop_machine((int (*)(void*)) __apply_hook, hook, cpu_online_mask);
-                __apply_hook(hook);
-            }
-
-            return 0;
+            //stop_machine((int (*)(void*)) __apply_hook, hook, cpu_online_mask);
+            __apply_hook(hook);
         }
+
+        return 0;
     }
 
     return -1;
 }
 
-int enable_hook(void *addr) {
-    return __change_hook(addr, 1);
+int enable_hook(hook_t *hook) {
+    return __change_hook(hook, 1);
 }
 
-int disable_hook(void *addr) {
-    return __change_hook(addr, 0);
+int disable_hook(hook_t *hook) {
+    return __change_hook(hook, 0);
 }

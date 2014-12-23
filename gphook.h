@@ -54,5 +54,5 @@ int init_hook(void);
 void cleanup_hook(void);
 hook_t *install_hook(void *addr, void *hookaddr);
 int remove_hook(void *addr);
-int enable_hook(void *addr);
-int disable_hook(void *addr);
+int enable_hook(hook_t *hook);
+int disable_hook(hook_t *hook);

@@ -22,10 +22,14 @@ unsigned int hide_uid_count=0;
 module_param_array(hide_uid, int, &hide_uid_count, 0644);
 
 char *hide_file[100] = {"bin/su", "bin/busybox", "app/Superuser.apk", "bin/proc", "bin/librank", };
-unsigned int hide_file_cnt=1;
+unsigned int hide_file_cnt=5;
 module_param_array(hide_file, charp, &hide_file_cnt, 0644);
 
-hook_t *hook;
+hook_t *hook_sys_getdents64 = NULL;
+hook_t *hook_sys_access = NULL;
+hook_t *hook_sys_stat64 = NULL;
+hook_t *hook_sys_open = NULL;
+hook_t *hook_do_execve = NULL;
 
 int check_hide_uid(void)
 {
@@ -52,12 +56,12 @@ int check_hide_file(const char *filename)
 	return 0;
 }
 
-long (*orig_sys_getdents64) (unsigned int fd,
-			     struct linux_dirent64 __user * dirent, unsigned int count);
-
-asmlinkage long my_sys_getdents64(unsigned int fd,
+asmlinkage long hookfunc_sys_getdents64(unsigned int fd,
 				  struct linux_dirent64 __user * dirent, unsigned int count)
 {
+    long (*orig_sys_getdents64) (unsigned int fd,
+        struct linux_dirent64 __user * dirent, unsigned int count) = hook_sys_getdents64 -> callorig;
+
 	int fake = 0;
 	int offset, copyret;
 	struct linux_dirent64 *td1, *td2, *cur, *prev;
@@ -160,86 +164,85 @@ asmlinkage long my_sys_getdents64(unsigned int fd,
 	return ret;
 }
 
-long (*orig_sys_access) (const char __user * filename, int mode);
-asmlinkage long my_sys_access(const char __user * filename, int mode)
+asmlinkage long hookfunc_sys_access(const char __user * filename, int mode)
 {
-	int fake = check_hide_uid();
+    long (*orig_sys_access) (const char __user * filename, int mode) = hook_sys_access -> callorig;
 
-	if (!fake == 0 && check_hide_file(filename))
+	if (check_hide_uid() == 0 && check_hide_file(filename))
 		return -ENOENT;
 
 	return orig_sys_access(filename, mode);
 }
 
-asmlinkage int my_do_execve(char __user * filename,
-			    const char __user * const __user * argv,
-			    const char __user * const __user * envp, struct pt_regs *regs)
+asmlinkage long hookfunc_sys_stat64(const char __user * filename, struct stat64 __user * statbuf)
 {
-	int fake = check_hide_uid();
+    long (*orig_sys_stat64) (const char __user * filename, struct stat64 __user * statbuf) = hook_sys_stat64 -> callorig;
 
-	if (fake == 0)
-		jprobe_return();
-
-	if (check_hide_file(filename))
-		filename[0] = 0;
-
-	jprobe_return();
-	return 0;
-}
-
-long (*orig_sys_stat64) (const char __user * filename, struct stat64 __user * statbuf);
-asmlinkage long my_sys_stat64(const char __user * filename, struct stat64 __user * statbuf)
-{
-	int fake = check_hide_uid();
-
-	if (!fake == 0 && check_hide_file(filename))
+	if (check_hide_uid() == 0 && check_hide_file(filename))
 		return -ENOENT;
 
 	return orig_sys_stat64(filename, statbuf);
 }
 
-asmlinkage long (*orig_sys_open) (const char __user * filename, int flags, umode_t mode);
-asmlinkage long my_sys_open(const char __user * filename, int flags, umode_t mode)
+asmlinkage long hookfunc_sys_open(const char __user * filename, int flags, umode_t mode)
 {
-	int fake = check_hide_uid();
+    long (*orig_sys_open) (const char __user * filename, int flags, umode_t mode) = hook_sys_open -> callorig;
 
-	if (!fake == 0 && check_hide_file(filename))
+	if (check_hide_uid() == 0 && check_hide_file(filename))
 		return -ENOENT;
 
 	return orig_sys_open(filename, flags, mode);
 }
 
-long hook_sysopen(const char __user * filename, int flags, umode_t mode) {
-    long (*modifiedhook)(const char __user * filename, int flags, umode_t mode) = hook -> callorig;
-    printk("Awesome!\n");
-    return modifiedhook(filename, flags, mode);
+asmlinkage int hookfunc_do_execve(char __user * filename,
+			    const char __user * const __user * argv,
+			    const char __user * const __user * envp, struct pt_regs *regs)
+{
+    int pid;
+    int (*orig_do_execve)(char __user * filename,
+			    const char __user * const __user * argv,
+			    const char __user * const __user * envp, struct pt_regs *regs) = hook_do_execve -> callorig;
+
+	if (check_hide_uid() && check_hide_file(filename))
+        return -ENOENT;
+
+    pid = orig_do_execve(filename, argv, envp, regs);
+    printk("do_execve pid=%d\n", pid);
+
+    return pid;
 }
 
 static int init_hideroot(void)
 {
-//    void (*modifiedhook)(void);
-    void *hooktarg;
+    void *targ_sys_getdents64;
+    void *targ_sys_access;
+    void *targ_sys_stat64;
+    void *targ_sys_open;
+    void *targ_do_execve;
 
     if(init_hook() == -1) {
         return -1;
     }
 
-    hooktarg = (void*)kallsyms_lookup_name("sys_open");
+    targ_sys_getdents64 = (void*)kallsyms_lookup_name("sys_getdents64");
+    targ_sys_access = (void*)kallsyms_lookup_name("sys_access");
+    targ_sys_stat64 = (void*)kallsyms_lookup_name("sys_stat64");
+    targ_sys_open = (void*)kallsyms_lookup_name("sys_open");
+    targ_do_execve = (void*)kallsyms_lookup_name("do_execve");
 
-    dumpcode((unsigned char*)hooktarg, 128);
 	printk("Hooking...\n");
-    hook = install_hook(hooktarg, hook_sysopen);
-    enable_hook(hooktarg);
+    hook_sys_getdents64 = install_hook(targ_sys_getdents64, hookfunc_sys_getdents64);
+    hook_sys_access = install_hook(targ_sys_access, hookfunc_sys_access);
+    hook_sys_stat64 = install_hook(targ_sys_stat64, hookfunc_sys_stat64);
+    hook_sys_open = install_hook(targ_sys_open, hookfunc_sys_open);
+    hook_do_execve = install_hook(targ_do_execve, hookfunc_do_execve);
 
-    dumpcode((unsigned char*)hooktarg, 128);
-    cacheflush(hooktarg, 16);
-    //printk("Running 0x%p\n", print_some_msg);
-    //print_some_msg();
-    //hook_print_some_msg();
-    //modifiedhook = hook -> callorig;
+    enable_hook(hook_sys_getdents64);
+    enable_hook(hook_sys_access);
+    enable_hook(hook_sys_stat64);
+    enable_hook(hook_sys_open);
+    //enable_hook(hook_do_execve);
 
-    //printk("Hook orig addr: 0x%p\n", hook -> callorig);
-    //modifiedhook();
 	printk("Okay. Enjoy it!\n");
 	
 	return 0;
@@ -248,9 +251,8 @@ static int init_hideroot(void)
 
 static void cleanup_hideroot(void)
 {
+    printk("Unhooking...\n");
     cleanup_hook();
-	printk("Unlocking...\n");
-
 
 	printk("Okay. bye.\n");
 }
