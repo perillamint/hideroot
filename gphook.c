@@ -5,7 +5,6 @@
 #include <asm/cacheflush.h>
 #include <asm/outercache.h>
 #include <asm/smp_plat.h>
-#include <asm/mmu_writeable.h>
 #include <asm/tlbflush.h>
 #include "mmuhack.h"
 #include "gphook.h"
@@ -32,12 +31,15 @@ void cacheflush ( void *begin, unsigned long size )
             "MOV r1, r1, lsl r0\n"        //r1 = r1 >> r0. Now r1 has dcache line size.
             "SUB r0, r1, #1\n"            //r1 - 1 = bitmask of dcache line size.
             "BIC r0, r2, r0\n"            //Calculate dcache to flush \w beginaddr and bitmask
-            "DSB\n"
+#ifdef CONFIG_SMP
+            "DSB\n"                       //Full data sync barrier only in SMP
+#endif
             "NOP\n"
-            //"ALT_SMP(W(DSB))\n"           //dmb(); 
-            //"ALT_UP(W(NOP))\n"            //We don't need barrier in UP.
             "1:\n"
-            "MCR p15, 0, r0, c7, c11, 1\n"//Finally, flush dcache.
+            //"MCR p15, 0, r0, c7, c11, 1\n"//Clean dcache to PoU.
+            "MCR p15, 0, r0, c7, c10, 1\n"//Clean dcache line by MVA to PoC
+            //"DSB\n"
+            //"MCR p15, 0, r0, c7, c14, 1\n"//Clean and invalidate dcache to PoC.
             "ADD r0, r0, r1\n"            //Add dcache line size.
             "CMP r0, r3\n"                //Check we flushed all.
             "BLO 1b\n"                    //Loop until we flush all.
@@ -49,15 +51,18 @@ void cacheflush ( void *begin, unsigned long size )
             "SUB r0, r1, #1\n"            //r1 - 1 = bitmask of icache line size
             "BIC r0, r2, r0\n"            //Calculate icache to flush \w beginaddr and bitmask
             "2:\n"
-            "MCR p15, 0, r0, c7, c5, 1\n" //Flush icache.
+            "MCR p15, 0, r0, c7, c5, 1\n" //Invalidate icache.
             "ADD r0, r0, r1\n"            //Add icache line size.
             "CMP r0, r3\n"                //Check we flushed all.
             "BLO 2b\n"                    //Loop until we flush all.
             "MOV r0, #0\n"
+            //"MCR p15, 0, r0, c7, c1, 0\n" //Invalidate all icache.
+#ifdef CONFIG_SMP
             "MCR p15, 0, r0, c7, c1, 6\n" //Invalidate BTB Inner sharable.
+#endif
             "MCR P15, 0, r0, c7, c5, 6\n" //Invalidate BTB
             "DSB ishst\n"
-            "ISB\n"
+            "ISB\n"                       //Instruction barrier.
             : "=m" (beginaddr), "=m" (endaddr));
 
     printk("Address 0x%08lX-0x%08lX flushed.\n", beginaddr, endaddr);
