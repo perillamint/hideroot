@@ -124,10 +124,12 @@ void register_origcall(hook_t *hook) {
 hook_t *install_hook(void *addr, void *hookaddr) {
     char hookcode[HOOKCODE_SIZE];
     hook_t *hook = 0x00000000;
+    int i = 0;
 
     memcpy(hookcode, HOOKCODE, HOOKCODE_SIZE);
 
     //Assuming 32-bit environment...
+    //TODO: Make it compat with 64bit address space.
     memcpy(hookcode + HOOKCODE_ADDROFFSET, &hookaddr, 4);
 
     hook = kmalloc(sizeof(*hook), GFP_KERNEL);
@@ -178,19 +180,20 @@ int remove_hook(void *addr) {
 int __apply_hook(hook_t *hook) {
     mmuhack_t hook_hack;
     int i;
+    int u16size = sizeof(u16);
 
     init_mmuhack(&hook_hack, (uintptr_t)hook -> addr);
     remove_pmd_flag(&hook_hack, PMD_SECT_APX);
 
     if(hook -> active_chg) {
-        for (i = 0; i < hook -> opcode_size / 4; i++) {
-            *(uint32_t*)(hook -> addr + 4 * i) = *(uint32_t*)(hook -> n_opcode + 4 * i);
+        for (i = 0; i < hook -> opcode_size / u16size; i++) {
+            *(u16*)(hook -> addr + u16size * i) = *(u16*)(hook -> n_opcode + u16size * i);
         }
         //memcpy(hook -> addr, hook -> n_opcode, hook -> opcode_size);
         hook -> active = 1;
     } else {
-        for (i = 0; i < hook -> opcode_size / 4; i++) {
-            *(uint32_t*)(hook -> addr + 4 * i) = *(uint32_t*)(hook -> o_opcode + 4 * i);
+        for (i = 0; i < hook -> opcode_size / u16size; i++) {
+            *(u16*)(hook -> addr + u16size * i) = *(u16*)(hook -> o_opcode + u16size * i);
         }
         //memcpy(hook -> addr, hook -> o_opcode, hook -> opcode_size);
         hook -> active = 0;
