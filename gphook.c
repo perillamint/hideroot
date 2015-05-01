@@ -15,6 +15,9 @@ void *execmem = NULL;
 void *execmem_lastused = NULL;
 mmuhack_t execmem_hack;
 
+
+//NOTE: This assembly code is originated from Linux kernel flush cache until LoUIS.
+//      Little bit modified, but it does not changed a lot.
 void cacheflush ( void *begin, unsigned long size )
 {
     uintptr_t __volatile__ beginaddr = (uintptr_t)begin;
