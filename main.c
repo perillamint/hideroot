@@ -1,6 +1,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/version.h>
+
 #include <linux/unistd.h>
 #include <linux/slab.h>
 #include <linux/list.h>
@@ -15,6 +16,15 @@
 #include <asm/processor.h>
 #include "mmuhack.h"
 #include "dumpcode.h"
+
+//Custom defs
+/*
+#define __NR_open 5
+#define __NR_access 33
+#define __NR_stat64 195
+#define __NR_lstat64 196
+#define __NR_fstat64 197
+*/
 
 #ifndef __NR_syscalls
 //TODO: find way to get rid of this.
